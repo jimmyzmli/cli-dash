@@ -45,7 +45,10 @@
                 <div class="card console-card">
                     <div class="card-header">
                         <h2><span class="icon">💻</span> Live Console</h2>
-                        <div id="active-job-id" class="active-job-id">Ready</div>
+                        <div class="active-job-wrapper">
+                            <div id="active-job-id" class="active-job-id">Ready</div>
+                            <button id="close-console" class="close-btn" style="display:none" onclick="closeConsole()" title="Close Console">✕</button>
+                        </div>
                     </div>
                     <div id="console" class="console">
                         <div class="placeholder">Select a task to see output...</div>

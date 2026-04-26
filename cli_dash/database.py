@@ -74,12 +74,7 @@ class Database:
             except sqlite3.OperationalError:
                 pass
 
-        # Mark stale jobs as failed on restart
-        c.execute(
-            "UPDATE jobs SET status = 'failed', "
-            "output = IFNULL(output, '') || '\n[Server restarted, job terminated]' "
-            "WHERE status IN ('running', 'pending')"
-        )
+        # Stale jobs are now handled by the server's recovery logic
         conn.commit()
         conn.close()
 
@@ -155,6 +150,14 @@ class Database:
         c.execute('DELETE FROM jobs WHERE id = ?', (job_id,))
         conn.commit()
         conn.close()
+
+    def get_running_jobs(self):
+        conn = self._connect()
+        c = conn.cursor()
+        c.execute("SELECT * FROM jobs WHERE status IN ('running', 'pending')")
+        rows = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return rows
 
     # --- Schedule CRUD ---
 

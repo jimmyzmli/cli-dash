@@ -74,26 +74,37 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
     try:
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         if extra_env:
             for k, v in extra_env.items():
                 if v is not None:
                     env[k] = str(v)
 
-        with open(log_path, "w") as log_file:
+        with open(log_path, "w", encoding="utf-8") as log_file:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             log_file.write(f"[{timestamp}] Starting job: {command}\n")
             log_file.flush()
 
-            process = subprocess.Popen(
-                command,
-                shell=True,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                env=env,
-                text=True,
-                bufsize=1,
-                universal_newlines=True,
-            )
+            popen_kwargs = {
+                "shell": True,
+                "stdout": log_file,
+                "stderr": subprocess.STDOUT,
+                "env": env,
+                "text": True,
+                "bufsize": 1,
+                "universal_newlines": True,
+            }
+            if os.name == "nt":
+                si = subprocess.STARTUPINFO()
+                si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                si.wShowWindow = subprocess.SW_HIDE
+                popen_kwargs["startupinfo"] = si
+                popen_kwargs["creationflags"] = (
+                    subprocess.CREATE_NEW_PROCESS_GROUP | 
+                    0x08000000  # CREATE_NO_WINDOW
+                )
+
+            process = subprocess.Popen(command, **popen_kwargs)
             db.update_job(job_id, pid=process.pid)
 
             return_code = process.wait()
@@ -102,10 +113,59 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
             log_file.write(f"[{end_timestamp}] Job {status} with exit code {return_code}\n")
             db.update_job(job_id, status=status, finished=True)
     except Exception as e:
-        with open(log_path, "a") as log_file:
+        with open(log_path, "a", encoding="utf-8") as log_file:
             err_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             log_file.write(f"\n[{err_timestamp}] [SERVER ERROR] {str(e)}\n")
         db.update_job(job_id, status="failed", finished=True)
+
+def is_pid_running(pid):
+    """Check if a process is running by PID."""
+    if os.name == "nt":
+        try:
+            cmd = ["tasklist", "/FI", f"PID eq {pid}", "/NH"]
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=5, shell=True,
+                creationflags=0x08000000
+            )
+            return str(pid) in res.stdout
+        except:
+            return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+def terminate_process(pid):
+    """Kill a process by PID."""
+    if not is_pid_running(pid):
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/PID", str(pid)], 
+                       creationflags=0x08000000, shell=True)
+    else:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+
+def _recovery_worker(db: Database, job_id: int, pid: int, data_dir: str):
+    """Monitor an orphaned background process and update job status when it finishes."""
+    while is_pid_running(pid):
+        time.sleep(5)
+    
+    # Process finished
+    status = "completed"
+    log_dir = os.path.join(data_dir, "jobs")
+    log_path = os.path.join(log_dir, f"{job_id}.log")
+    try:
+        with open(log_path, "a", encoding="utf-8") as f:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            f.write(f"\n[{timestamp}] Job {status} (detected termination after server restart)\n")
+    except:
+        pass
+    db.update_job(job_id, status=status, finished=True)
 
 
 def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
@@ -243,10 +303,7 @@ def create_app(config: AppConfig, db: Database):
         jobs = db.get_jobs(limit=100)
         for job in jobs:
             if job.get("status") == "running" and job.get("pid"):
-                try:
-                    os.kill(job["pid"], signal.SIGTERM)
-                except Exception:
-                    pass
+                terminate_process(job["pid"])
         db.clear_jobs()
         log_dir = os.path.join(data_dir, "jobs")
         if os.path.exists(log_dir):
@@ -268,11 +325,8 @@ def create_app(config: AppConfig, db: Database):
     @app.delete("/api/job/{job_id}")
     async def delete_job(job_id: int):
         job = db.get_job(job_id)
-        if job and job.get("status") == "running" and job.get("pid"):
-            try:
-                os.kill(job["pid"], signal.SIGTERM)
-            except Exception:
-                pass
+        if job and job.get("pid"):
+            terminate_process(job["pid"])
         db.delete_job(job_id)
         log_path = os.path.join(data_dir, "jobs", f"{job_id}.log")
         if os.path.exists(log_path):
@@ -426,10 +480,10 @@ class DashServer:
             try:
                 with open(self.pid_file, "r") as f:
                     pid = int(f.read().strip())
-                os.kill(pid, 0)
-                return pid
-            except (ProcessLookupError, ValueError, FileNotFoundError, PermissionError):
-                return None
+                if is_pid_running(pid):
+                    return pid
+            except:
+                pass
         return None
 
     def start(self):
@@ -451,6 +505,7 @@ class DashServer:
                 [sys.executable, "-m", "pip", "install",
                  "fastapi", "uvicorn", "python-multipart", "croniter"],
                 check=True,
+                creationflags=0x08000000 if os.name == "nt" else 0
             )
 
         # Daemonize (Unix)
@@ -478,10 +533,10 @@ class DashServer:
             else:
                 # Windows daemonization
                 cmd = [sys.executable] + sys.argv + ["--internal-run"]
-                with open(self.error_log, "a") as log_file:
+                with open(self.error_log, "a", encoding="utf-8") as log_file:
                     subprocess.Popen(
                         cmd,
-                        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                        creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000),
                         stdout=log_file, stderr=subprocess.STDOUT, close_fds=True,
                     )
                 print("Server starting in background...")
@@ -493,6 +548,33 @@ class DashServer:
 
         # Init DB
         self.db.init_db()
+
+        # Recover orphaned jobs
+        try:
+            running_jobs = self.db.get_running_jobs()
+            if running_jobs:
+                logging.info(f"Found {len(running_jobs)} running/pending jobs to recover.")
+            for job in running_jobs:
+                job_id = job['id']
+                pid = job.get('pid')
+                if not pid or not is_pid_running(pid):
+                    self.db.update_job(job_id, status='failed', finished=True)
+                    log_path = os.path.join(self.config.data_dir, "jobs", f"{job_id}.log")
+                    try:
+                        with open(log_path, "a", encoding="utf-8") as f:
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            f.write(f"\n[{timestamp}] Job failed (detected process death after server restart)\n")
+                    except: pass
+                else:
+                    # Still running! Start recovery monitor
+                    t = threading.Thread(
+                        target=_recovery_worker,
+                        args=(self.db, job_id, pid, self.config.data_dir),
+                        daemon=True
+                    )
+                    t.start()
+        except Exception as e:
+            logging.error(f"Error during job recovery: {e}")
 
         # Seed schedules
         schedules_file = self.config.schedules_file
@@ -556,6 +638,7 @@ class DashServer:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(pid)],
                     check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    creationflags=0x08000000
                 )
             else:
                 os.kill(pid, signal.SIGTERM)

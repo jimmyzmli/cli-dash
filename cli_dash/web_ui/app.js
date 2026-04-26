@@ -247,6 +247,7 @@ function startPolling(jobId, label) {
     if (pollInterval) clearInterval(pollInterval);
     activeJobId = jobId;
     document.getElementById('active-job-id').textContent = `Running: ${label} (#${jobId})`;
+    document.getElementById('close-console').style.display = 'block';
     const con = document.getElementById('console');
     if (currentOffset === 0) con.innerHTML = `<div class="running-indicator">Initializing ${label}...</div>`;
 
@@ -282,6 +283,7 @@ async function showJob(jobId, command) {
     if (window.location.pathname !== `/job/${jobId}`) window.history.pushState({}, '', `/job/${jobId}`);
     activeJobId = jobId;
     document.getElementById('active-job-id').textContent = `Viewing: #${jobId}`;
+    document.getElementById('close-console').style.display = 'block';
     const con = document.getElementById('console');
     con.textContent = 'Loading output...';
     currentOffset = 0;
@@ -296,6 +298,15 @@ async function showJob(jobId, command) {
         if (job.status === 'running') startPolling(jobId, command);
         if (window.onJobLogUpdate) window.onJobLogUpdate(job, con.textContent);
     } catch (e) { console.error('Error showing job:', e); }
+}
+
+function closeConsole() {
+    if (pollInterval) clearInterval(pollInterval);
+    activeJobId = null;
+    document.getElementById('active-job-id').textContent = 'Ready';
+    document.getElementById('close-console').style.display = 'none';
+    document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
+    if (window.location.pathname !== '/') window.history.pushState(null, '', '/');
 }
 
 // --- History ---
@@ -343,10 +354,24 @@ async function refreshHistory() {
 }
 
 async function deleteJob(id, status) {
-    if (status !== 'completed' && !confirm('Delete logs for this job?')) return;
+    let msg = 'Delete logs for this job?';
+    if (status === 'running') {
+        msg = 'Warning: This job is still running. Terminating it now may lead to data loss. Kill process and delete logs?';
+    } else if (status === 'pending') {
+        msg = 'Delete this pending job?';
+    }
+
+    if (!confirm(msg)) return;
     try {
         await fetch(`/api/job/${id}`, { method: 'DELETE' });
-        if (activeJobId === id) { clearInterval(pollInterval); activeJobId = null; document.getElementById('active-job-id').textContent = 'Ready'; document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>'; history.pushState(null,'','/'); }
+        if (activeJobId === id) {
+            if (pollInterval) clearInterval(pollInterval);
+            activeJobId = null;
+            document.getElementById('active-job-id').textContent = 'Ready';
+            document.getElementById('close-console').style.display = 'none';
+            document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
+            history.pushState(null, '', '/');
+        }
         refreshHistory();
     } catch (e) { console.error('Error deleting job:', e); }
 }
