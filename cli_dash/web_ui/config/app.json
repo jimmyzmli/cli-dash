@@ -1,0 +1,7 @@
+{
+    "icon": "⚡",
+    "header_options": [
+        {"id": "dry-run", "label": "Dry Run (-n)", "flag": "-n", "warn_off": true},
+        {"id": "force", "label": "Force (-f)", "flag": "-f"}
+    ]
+}

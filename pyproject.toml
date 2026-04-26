@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cli-dash"
+version = "0.1.0"
+description = "A drop-in Control Center dashboard for any CLI tool"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+    "croniter",
+    "python-dotenv",
+]
+
+[project.scripts]
+cli-dash = "cli_dash.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["cli_dash*"]
+
+[tool.setuptools.package-data]
+cli_dash = ["web_ui/**/*"]
