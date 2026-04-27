@@ -337,15 +337,100 @@ def create_app(config: AppConfig, db: Database):
         return {"status": "deleted"}
 
     @app.get("/api/job/{job_id}/log")
-    async def get_job_log(job_id: int, offset: int = 0):
+    async def get_job_log(job_id: int, offset: int = 0, wait: int = 0):
+        """
+        Long-polling log endpoint. If `wait` > 0, the server will hold
+        the connection open for up to `wait` seconds (max 30) until new
+        log content appears beyond the given offset. This dramatically
+        reduces polling overhead for active jobs. The job status and type
+        are returned inline so a single request replaces two.
+        """
+        import asyncio as _asyncio
+
         log_path = os.path.join(data_dir, "jobs", f"{job_id}.log")
+        wait = min(max(wait, 0), 30)  # Clamp to [0, 30]
+
+        job = db.get_job(job_id)
+        job_status = job["status"] if job else "unknown"
+        job_type = job.get("job_type", "command") if job else "command"
+
+        def _make_response(content, new_offset):
+            return {"content": content, "offset": new_offset,
+                    "job_status": job_status, "job_type": job_type}
+
         if not os.path.exists(log_path):
-            return {"content": "", "offset": 0, "status": "not_found"}
-        with open(log_path, "r") as f:
+            return _make_response("", 0)
+
+        # Fast path: no wait requested, or offset 0 (initial load)
+        if wait == 0 or offset == 0:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(offset)
+                content = f.read()
+                new_offset = f.tell()
+            return _make_response(content, new_offset)
+
+        # Long-poll: wait for new data, then debounce to batch rapid writes.
+        # This turns ~1 req/sec (rclone) into ~1 req/3-4sec.
+        check_interval = 0.5   # How often to check for *any* new data
+        debounce = 2.0         # After first new data, wait this long for more
+        elapsed = 0.0
+
+        # Phase 1: Wait for ANY new data to appear
+        while elapsed < wait:
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(0, 2)
+                file_size = f.tell()
+
+            if file_size > offset:
+                break  # New data found — proceed to debounce phase
+
+            # Check if job ended while we were waiting
+            job = db.get_job(job_id)
+            job_status = job["status"] if job else "unknown"
+            job_type = job.get("job_type", "command") if job else "command"
+            if job_status not in ("running", "pending"):
+                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(offset)
+                    content = f.read()
+                    new_offset = f.tell()
+                return _make_response(content, new_offset)
+
+            await _asyncio.sleep(check_interval)
+            elapsed += check_interval
+        else:
+            # Timeout with no new data
+            return _make_response("", offset)
+
+        # Phase 2: Debounce — let output accumulate before responding
+        last_size = file_size
+        debounce_elapsed = 0.0
+        while debounce_elapsed < debounce:
+            await _asyncio.sleep(0.5)
+            debounce_elapsed += 0.5
+            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(0, 2)
+                current_size = f.tell()
+            if current_size > last_size:
+                last_size = current_size
+                debounce_elapsed = 0.0  # Reset: more data is still arriving
+
+            # If job finished during debounce, return immediately
+            job = db.get_job(job_id)
+            job_status = job["status"] if job else "unknown"
+            job_type = job.get("job_type", "command") if job else "command"
+            if job_status not in ("running", "pending"):
+                break
+
+        # Read all accumulated data
+        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             f.seek(offset)
             content = f.read()
             new_offset = f.tell()
-        return {"content": content, "offset": new_offset}
+        job = db.get_job(job_id)
+        job_status = job["status"] if job else "unknown"
+        job_type = job.get("job_type", "command") if job else "command"
+        return _make_response(content, new_offset)
+
 
     # Schedules API
 
@@ -405,9 +490,10 @@ def create_app(config: AppConfig, db: Database):
         data = await request.json()
         command = data.get("command")
         is_cron = data.get("is_cron", 0)
+        job_type = data.get("job_type", "command")
         if not command:
             raise HTTPException(status_code=400, detail="No command provided")
-        job_id = _run_job(db, command, data_dir, extra_env=config.extra_env, is_cron=is_cron)
+        job_id = _run_job(db, command, data_dir, extra_env=config.extra_env, is_cron=is_cron, job_type=job_type)
         return {"job_id": job_id, "status": "pending"}
 
     # --- Extension hook: let consuming projects add custom routes ---

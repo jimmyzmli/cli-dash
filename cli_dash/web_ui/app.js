@@ -1,6 +1,6 @@
 /* cli-dash core app.js — config-driven, extensible */
 
-let currentOffset = 0, activeJobId = null, pollInterval = null;
+let currentOffset = 0, activeJobId = null;
 
 // Extension registry — projects push to these before DOMContentLoaded
 window.dashExtensions = { tabs: [], headerOptions: [], onInit: [] };
@@ -18,13 +18,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     try {
         const r = await fetch('/static/config/app.json');
         if (r.ok) appConfig = await r.json();
-    } catch(e) {}
+    } catch (e) { }
 
     // Load server config (title)
     try {
         const r = await fetch('/api/config');
         if (r.ok) { const d = await r.json(); if (d.title) document.title = d.title; }
-    } catch(e) {}
+    } catch (e) { }
 
     // Apply icon + title
     if (appConfig.icon) document.getElementById('app-icon').textContent = appConfig.icon;
@@ -139,8 +139,8 @@ function handleHash() {
 
     // Find matching tab
     const allTabs = [...window.dashExtensions.tabs,
-        { id: 'commands', label: 'Commands', onActivate: loadCommands },
-        { id: 'scheduled', label: 'Scheduled', onActivate: refreshSchedules }];
+    { id: 'commands', label: 'Commands', onActivate: loadCommands },
+    { id: 'scheduled', label: 'Scheduled', onActivate: refreshSchedules }];
 
     let matched = allTabs.find(t => t.label === hash);
     if (!matched) matched = allTabs[0]; // Default to first tab
@@ -209,7 +209,7 @@ async function loadCommands() {
 
 // --- Run Command ---
 async function runCommand(command, label, isCron = 0) {
-    if (!command.startsWith('python3 ') && !command.startsWith('python ') && (command.endsWith('.py') || command.includes('.py ')))
+    if (!command.startsWith('python3 ') && !command.startsWith('python ') && !command.startsWith('pythonw ') && !command.startsWith('py ') && (command.endsWith('.py') || command.includes('.py ')))
         command = 'python3 ' + command;
 
     // Apply header option flags
@@ -242,44 +242,65 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 100);
 });
 
-// --- Polling ---
+// --- Long-Polling ---
+let pollAbort = null;  // AbortController for active long-poll
+
 function startPolling(jobId, label) {
-    if (pollInterval) clearInterval(pollInterval);
+    stopPolling();
     activeJobId = jobId;
     document.getElementById('active-job-id').textContent = `Running: ${label} (#${jobId})`;
     document.getElementById('close-console').style.display = 'block';
     const con = document.getElementById('console');
     if (currentOffset === 0) con.innerHTML = `<div class="running-indicator">Initializing ${label}...</div>`;
 
-    pollInterval = setInterval(async () => {
-        try {
-            const sr = await fetch(`/api/job/${jobId}`);
-            const job = await sr.json();
-            const lr = await fetch(`/api/job/${jobId}/log?offset=${currentOffset}`);
-            const ld = await lr.json();
+    pollAbort = new AbortController();
+    pollLoop(jobId, label, pollAbort.signal);
+}
 
-            if (currentOffset === 0 && (ld.content || job.status !== 'pending')) con.textContent = '';
-            if (ld.content) {
-                const atBottom = con.scrollHeight - con.scrollTop <= con.clientHeight + 50;
-                con.textContent += ld.content;
-                currentOffset = ld.offset;
-                if (atBottom) con.scrollTop = con.scrollHeight;
-                // Extension hook for log processing (e.g. rclone progress)
-                if (window.onJobLogUpdate) window.onJobLogUpdate(job, con.textContent);
-            } else if (currentOffset === 0 && job.status !== 'running' && job.status !== 'pending') {
-                con.textContent = 'No output captured.';
-            }
-            if (job.status !== 'running' && job.status !== 'pending') {
-                clearInterval(pollInterval);
-                document.getElementById('active-job-id').textContent = `Finished: ${label} (#${jobId})`;
-                refreshHistory();
-            }
-        } catch (e) { console.error('Polling error:', e); }
-    }, 1000);
+async function pollLoop(jobId, label, signal) {
+    const con = document.getElementById('console');
+    try {
+        // Use wait=10 for long-polling (server holds up to 10s)
+        const waitSec = currentOffset === 0 ? 0 : 10;
+        const r = await fetch(`/api/job/${jobId}/log?offset=${currentOffset}&wait=${waitSec}`, { signal });
+        const data = await r.json();
+        const jobStatus = data.job_status || 'unknown';
+
+        if (currentOffset === 0 && (data.content || jobStatus !== 'pending')) con.textContent = '';
+        if (data.content) {
+            const atBottom = con.scrollHeight - con.scrollTop <= con.clientHeight + 50;
+            con.textContent += data.content;
+            currentOffset = data.offset;
+            if (atBottom) con.scrollTop = con.scrollHeight;
+            // Extension hook for log processing (e.g. rclone progress)
+            if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus, job_type: data.job_type }, con.textContent);
+        } else if (currentOffset === 0 && jobStatus !== 'running' && jobStatus !== 'pending') {
+            con.textContent = 'No output captured.';
+        }
+
+        if (jobStatus !== 'running' && jobStatus !== 'pending') {
+            document.getElementById('active-job-id').textContent = `Finished: ${label} (#${jobId})`;
+            refreshHistory();
+            return; // Stop polling
+        }
+
+        // Continue polling (recursive, not setInterval — no overlap possible)
+        if (!signal.aborted) pollLoop(jobId, label, signal);
+    } catch (e) {
+        if (e.name === 'AbortError') return; // Intentional cancel
+        console.error('Polling error:', e);
+        // Retry after a short delay on network errors
+        if (!signal.aborted) setTimeout(() => pollLoop(jobId, label, signal), 2000);
+    }
+}
+
+function stopPolling() {
+    if (pollAbort) { pollAbort.abort(); pollAbort = null; }
+    activeJobId = null;
 }
 
 async function showJob(jobId, command) {
-    if (pollInterval) clearInterval(pollInterval);
+    stopPolling();
     if (window.location.pathname !== `/job/${jobId}`) window.history.pushState({}, '', `/job/${jobId}`);
     activeJobId = jobId;
     document.getElementById('active-job-id').textContent = `Viewing: #${jobId}`;
@@ -288,26 +309,26 @@ async function showJob(jobId, command) {
     con.textContent = 'Loading output...';
     currentOffset = 0;
     try {
-        const sr = await fetch(`/api/job/${jobId}`);
-        const job = await sr.json();
+        // Single request — offset 0 returns immediately with full log + status
         const lr = await fetch(`/api/job/${jobId}/log?offset=0`);
         const ld = await lr.json();
-        con.textContent = ld.content || (job.status === 'running' ? 'Initializing...' : 'No output captured.');
+        const jobStatus = ld.job_status || 'unknown';
+        con.textContent = ld.content || (jobStatus === 'running' ? 'Initializing...' : 'No output captured.');
         currentOffset = ld.offset;
         con.scrollTop = con.scrollHeight;
-        if (job.status === 'running') startPolling(jobId, command);
-        if (window.onJobLogUpdate) window.onJobLogUpdate(job, con.textContent);
+        if (jobStatus === 'running' || jobStatus === 'pending') startPolling(jobId, command);
+        if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus }, con.textContent);
     } catch (e) { console.error('Error showing job:', e); }
 }
 
 function closeConsole() {
-    if (pollInterval) clearInterval(pollInterval);
-    activeJobId = null;
+    stopPolling();
     document.getElementById('active-job-id').textContent = 'Ready';
     document.getElementById('close-console').style.display = 'none';
     document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
     if (window.location.pathname !== '/') window.history.pushState(null, '', '/');
 }
+
 
 // --- History ---
 async function refreshHistory() {
@@ -345,7 +366,7 @@ async function refreshHistory() {
                     <span class="status-badge status-${job.status}">${job.status}</span>
                 </div>
                 <div class="job-actions">
-                    <button class="action-job-btn rerun-btn" onclick="runCommand('${runCmdEsc}','Rerun',${job.is_cron?1:0});event.stopPropagation()" title="Rerun">▶</button>
+                    <button class="action-job-btn rerun-btn" onclick="runCommand('${runCmdEsc}','Rerun',${job.is_cron ? 1 : 0});event.stopPropagation()" title="Rerun">▶</button>
                     <button class="action-job-btn delete-btn" onclick="deleteJob(${job.id},'${job.status}');event.stopPropagation()" title="Delete">✕</button>
                 </div>`;
             hl.appendChild(item);
@@ -408,7 +429,7 @@ async function refreshSchedules() {
                 const nd = new Date(s.next_run_iso);
                 const ts = nd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
                 const dm = s.minutes_until;
-                let rs = dm === 0 ? 'due now' : dm < 60 ? `in ${dm}m` : dm < 1440 ? `in ${Math.floor(dm/60)}h ${dm%60}m` : `in ${Math.floor(dm/1440)}d`;
+                let rs = dm === 0 ? 'due now' : dm < 60 ? `in ${dm}m` : dm < 1440 ? `in ${Math.floor(dm / 60)}h ${dm % 60}m` : `in ${Math.floor(dm / 1440)}d`;
                 nrs = `<div class="schedule-subtitle">Next run: ${ts} (${rs})</div>`;
             }
             item.innerHTML = `
@@ -422,7 +443,7 @@ async function refreshSchedules() {
                     <div class="dropdown-item" onclick="runCommand('${s.command}','${s.label}',1)">Run Now</div>
                     <div class="dropdown-item" onclick="${isEdit ? `saveSchedule(${s.id})` : `startEditSchedule(${s.id})`}">${isEdit ? 'Save' : 'Edit'}</div>
                     <div class="dropdown-item" onclick="toggleSchedule(${s.id},${s.enabled})">${s.enabled ? 'Deactivate' : 'Activate'}</div>
-                    <div class="dropdown-item" onclick="toggleCatchUp(${s.id},${s.catch_up||0})">${s.catch_up ? 'Disable Catch Up' : 'Enable Catch Up'}</div>
+                    <div class="dropdown-item" onclick="toggleCatchUp(${s.id},${s.catch_up || 0})">${s.catch_up ? 'Disable Catch Up' : 'Enable Catch Up'}</div>
                     <div class="dropdown-item warning" onclick="deleteSchedule(${s.id})">Delete</div>
                 </div></div></div>`;
             list.appendChild(item);
@@ -475,8 +496,8 @@ document.addEventListener('DOMContentLoaded', () => {
 // --- Server status ---
 async function checkStatus() {
     try { await fetch('/api/jobs'); document.getElementById('server-status').style.backgroundColor = 'var(--success-color)'; document.getElementById('server-status').style.boxShadow = '0 0 8px var(--success-color)'; document.getElementById('status-text').textContent = 'Connected'; }
-    catch(e) { document.getElementById('server-status').style.backgroundColor = 'var(--error-color)'; document.getElementById('server-status').style.boxShadow = '0 0 8px var(--error-color)'; document.getElementById('status-text').textContent = 'Disconnected'; }
+    catch (e) { document.getElementById('server-status').style.backgroundColor = 'var(--error-color)'; document.getElementById('server-status').style.boxShadow = '0 0 8px var(--error-color)'; document.getElementById('status-text').textContent = 'Disconnected'; }
 }
 
 // Store config globally for runCommand flag logic
-(async () => { try { const r = await fetch('/static/config/app.json'); if (r.ok) window._appConfig = await r.json(); } catch(e){} })();
+(async () => { try { const r = await fetch('/static/config/app.json'); if (r.ok) window._appConfig = await r.json(); } catch (e) { } })();
