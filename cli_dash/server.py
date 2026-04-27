@@ -235,7 +235,7 @@ def create_app(config: AppConfig, db: Database):
     """
     from fastapi import FastAPI, Request, HTTPException
     from fastapi.staticfiles import StaticFiles
-    from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
 
     app = FastAPI(title=config.title)
 
@@ -337,100 +337,126 @@ def create_app(config: AppConfig, db: Database):
         return {"status": "deleted"}
 
     @app.get("/api/job/{job_id}/log")
-    async def get_job_log(job_id: int, offset: int = 0, wait: int = 0):
-        """
-        Long-polling log endpoint. If `wait` > 0, the server will hold
-        the connection open for up to `wait` seconds (max 30) until new
-        log content appears beyond the given offset. This dramatically
-        reduces polling overhead for active jobs. The job status and type
-        are returned inline so a single request replaces two.
-        """
-        import asyncio as _asyncio
-
+    async def get_job_log(job_id: int, offset: int = 0):
+        """Return log content from offset. Used for initial load and finished jobs."""
         log_path = os.path.join(data_dir, "jobs", f"{job_id}.log")
-        wait = min(max(wait, 0), 30)  # Clamp to [0, 30]
-
         job = db.get_job(job_id)
         job_status = job["status"] if job else "unknown"
         job_type = job.get("job_type", "command") if job else "command"
 
-        def _make_response(content, new_offset):
-            return {"content": content, "offset": new_offset,
-                    "job_status": job_status, "job_type": job_type}
-
         if not os.path.exists(log_path):
-            return _make_response("", 0)
+            return {"content": "", "offset": 0, "job_status": job_status, "job_type": job_type}
 
-        # Fast path: no wait requested, or offset 0 (initial load)
-        if wait == 0 or offset == 0:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                f.seek(offset)
-                content = f.read()
-                new_offset = f.tell()
-            return _make_response(content, new_offset)
-
-        # Long-poll: wait for new data, then debounce to batch rapid writes.
-        # This turns ~1 req/sec (rclone) into ~1 req/3-4sec.
-        check_interval = 0.5   # How often to check for *any* new data
-        debounce = 2.0         # After first new data, wait this long for more
-        elapsed = 0.0
-
-        # Phase 1: Wait for ANY new data to appear
-        while elapsed < wait:
-            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                f.seek(0, 2)
-                file_size = f.tell()
-
-            if file_size > offset:
-                break  # New data found — proceed to debounce phase
-
-            # Check if job ended while we were waiting
-            job = db.get_job(job_id)
-            job_status = job["status"] if job else "unknown"
-            job_type = job.get("job_type", "command") if job else "command"
-            if job_status not in ("running", "pending"):
-                with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                    f.seek(offset)
-                    content = f.read()
-                    new_offset = f.tell()
-                return _make_response(content, new_offset)
-
-            await _asyncio.sleep(check_interval)
-            elapsed += check_interval
-        else:
-            # Timeout with no new data
-            return _make_response("", offset)
-
-        # Phase 2: Debounce — let output accumulate before responding
-        last_size = file_size
-        debounce_elapsed = 0.0
-        while debounce_elapsed < debounce:
-            await _asyncio.sleep(0.5)
-            debounce_elapsed += 0.5
-            with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                f.seek(0, 2)
-                current_size = f.tell()
-            if current_size > last_size:
-                last_size = current_size
-                debounce_elapsed = 0.0  # Reset: more data is still arriving
-
-            # If job finished during debounce, return immediately
-            job = db.get_job(job_id)
-            job_status = job["status"] if job else "unknown"
-            job_type = job.get("job_type", "command") if job else "command"
-            if job_status not in ("running", "pending"):
-                break
-
-        # Read all accumulated data
         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
             f.seek(offset)
             content = f.read()
             new_offset = f.tell()
-        job = db.get_job(job_id)
-        job_status = job["status"] if job else "unknown"
-        job_type = job.get("job_type", "command") if job else "command"
-        return _make_response(content, new_offset)
+        return {"content": content, "offset": new_offset,
+                "job_status": job_status, "job_type": job_type}
 
+    @app.get("/api/job/{job_id}/stream")
+    async def stream_job_log(job_id: int, offset: int = 0):
+        """
+        SSE stream for live log tailing. Single persistent connection —
+        server pushes new content every ~1s. No polling overhead.
+        """
+        import asyncio as _asyncio
+        import json as _json
+
+        log_path = os.path.join(data_dir, "jobs", f"{job_id}.log")
+
+        async def event_generator():
+            current_offset = offset
+            while True:
+                job = db.get_job(job_id)
+                job_status = job["status"] if job else "unknown"
+                job_type = job.get("job_type", "command") if job else "command"
+
+                content = ""
+                if os.path.exists(log_path):
+                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                        f.seek(current_offset)
+                        content = f.read()
+                        current_offset = f.tell()
+
+                # Always send an event (even empty) so client gets status updates
+                payload = _json.dumps({
+                    "content": content,
+                    "offset": current_offset,
+                    "job_status": job_status,
+                    "job_type": job_type,
+                })
+                yield f"data: {payload}\n\n"
+
+                # Stop streaming if job is done
+                if job_status not in ("running", "pending"):
+                    return
+
+                await _asyncio.sleep(1)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.get("/api/state/stream")
+    async def stream_state():
+        """
+        Unified SSE stream for dashboard state (jobs + schedules).
+        Pushes updates every 5 seconds over a single persistent connection,
+        replacing separate polling intervals for jobs, schedules, and status.
+        """
+        import asyncio as _asyncio
+        import json as _json
+        from croniter import croniter
+
+        def _build_schedules():
+            schedules = db.get_schedules()
+            now = datetime.now()
+            for s in schedules:
+                if not s["enabled"]:
+                    s["next_run_iso"] = None
+                    s["minutes_until"] = 999999
+                    continue
+                try:
+                    cron_iter = croniter(s["cron_expr"], now)
+                    next_run = cron_iter.get_next(datetime)
+                    s["next_run_iso"] = next_run.isoformat()
+                    s["minutes_until"] = int((next_run - now).total_seconds() / 60)
+                except Exception:
+                    s["next_run_iso"] = None
+                    s["minutes_until"] = 999999
+            schedules.sort(key=lambda x: x["minutes_until"])
+            return schedules
+
+        async def event_generator():
+            while True:
+                try:
+                    jobs = db.get_jobs()
+                    schedules = _build_schedules()
+                    payload = _json.dumps({
+                        "jobs": jobs,
+                        "schedules": schedules,
+                    })
+                    yield f"data: {payload}\n\n"
+                except Exception as e:
+                    logging.error(f"State stream error: {e}")
+                await _asyncio.sleep(5)
+
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
 
     # Schedules API
 

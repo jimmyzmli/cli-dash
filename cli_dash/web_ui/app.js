@@ -73,13 +73,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Run extension init hooks
     window.dashExtensions.onInit.forEach(fn => fn());
 
-    // Route + periodic refresh
+    // Route + initial load
     handleRoute();
     refreshHistory();
-    setInterval(refreshHistory, 5000);
-    setInterval(refreshSchedules, 10000);
-    setInterval(checkStatus, 5000);
+    refreshSchedules();
     checkStatus();
+
+    // SSE state stream — replaces setInterval for jobs + schedules
+    const stateSource = new EventSource('/api/state/stream');
+    stateSource.onmessage = (event) => {
+        try {
+            const state = JSON.parse(event.data);
+            renderHistory(state.jobs);
+            renderSchedules(state.schedules);
+            // Connection is alive = server is up
+            document.getElementById('server-status').style.backgroundColor = 'var(--success-color)';
+            document.getElementById('server-status').style.boxShadow = '0 0 8px var(--success-color)';
+            document.getElementById('status-text').textContent = 'Connected';
+        } catch (e) { console.error('State stream parse error:', e); }
+    };
+    stateSource.onerror = () => {
+        document.getElementById('server-status').style.backgroundColor = 'var(--error-color)';
+        document.getElementById('server-status').style.boxShadow = '0 0 8px var(--error-color)';
+        document.getElementById('status-text').textContent = 'Disconnected';
+    };
 });
 
 function buildCommandsHTML() {
@@ -223,7 +240,7 @@ async function runCommand(command, label, isCron = 0) {
     try {
         const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron }) });
         const data = await r.json();
-        if (data.job_id) { currentOffset = 0; startPolling(data.job_id, label); refreshHistory(); }
+        if (data.job_id) { currentOffset = 0; startStreaming(data.job_id, label); refreshHistory(); }
     } catch (e) { console.error('Error running command:', e); alert('Failed to start command'); }
 }
 
@@ -242,28 +259,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 100);
 });
 
-// --- Long-Polling ---
-let pollAbort = null;  // AbortController for active long-poll
+// --- SSE Live Streaming ---
+let eventSource = null;  // Active EventSource connection
 
-function startPolling(jobId, label) {
-    stopPolling();
+function startStreaming(jobId, label) {
+    stopStreaming();
     activeJobId = jobId;
     document.getElementById('active-job-id').textContent = `Running: ${label} (#${jobId})`;
     document.getElementById('close-console').style.display = 'block';
     const con = document.getElementById('console');
     if (currentOffset === 0) con.innerHTML = `<div class="running-indicator">Initializing ${label}...</div>`;
 
-    pollAbort = new AbortController();
-    pollLoop(jobId, label, pollAbort.signal);
-}
-
-async function pollLoop(jobId, label, signal) {
-    const con = document.getElementById('console');
-    try {
-        // Use wait=10 for long-polling (server holds up to 10s)
-        const waitSec = currentOffset === 0 ? 0 : 10;
-        const r = await fetch(`/api/job/${jobId}/log?offset=${currentOffset}&wait=${waitSec}`, { signal });
-        const data = await r.json();
+    eventSource = new EventSource(`/api/job/${jobId}/stream?offset=${currentOffset}`);
+    eventSource.onmessage = (event) => {
+        const data = JSON.parse(event.data);
         const jobStatus = data.job_status || 'unknown';
 
         if (currentOffset === 0 && (data.content || jobStatus !== 'pending')) con.textContent = '';
@@ -272,35 +281,30 @@ async function pollLoop(jobId, label, signal) {
             con.textContent += data.content;
             currentOffset = data.offset;
             if (atBottom) con.scrollTop = con.scrollHeight;
-            // Extension hook for log processing (e.g. rclone progress)
             if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus, job_type: data.job_type }, con.textContent);
         } else if (currentOffset === 0 && jobStatus !== 'running' && jobStatus !== 'pending') {
             con.textContent = 'No output captured.';
         }
 
         if (jobStatus !== 'running' && jobStatus !== 'pending') {
+            stopStreaming();
             document.getElementById('active-job-id').textContent = `Finished: ${label} (#${jobId})`;
             refreshHistory();
-            return; // Stop polling
         }
-
-        // Continue polling (recursive, not setInterval — no overlap possible)
-        if (!signal.aborted) pollLoop(jobId, label, signal);
-    } catch (e) {
-        if (e.name === 'AbortError') return; // Intentional cancel
-        console.error('Polling error:', e);
-        // Retry after a short delay on network errors
-        if (!signal.aborted) setTimeout(() => pollLoop(jobId, label, signal), 2000);
-    }
+    };
+    eventSource.onerror = () => {
+        // SSE auto-reconnects; if job is done the stream closes cleanly
+        stopStreaming();
+    };
 }
 
-function stopPolling() {
-    if (pollAbort) { pollAbort.abort(); pollAbort = null; }
+function stopStreaming() {
+    if (eventSource) { eventSource.close(); eventSource = null; }
     activeJobId = null;
 }
 
 async function showJob(jobId, command) {
-    stopPolling();
+    stopStreaming();
     if (window.location.pathname !== `/job/${jobId}`) window.history.pushState({}, '', `/job/${jobId}`);
     activeJobId = jobId;
     document.getElementById('active-job-id').textContent = `Viewing: #${jobId}`;
@@ -309,20 +313,20 @@ async function showJob(jobId, command) {
     con.textContent = 'Loading output...';
     currentOffset = 0;
     try {
-        // Single request — offset 0 returns immediately with full log + status
+        // Single GET for initial load (full log + status)
         const lr = await fetch(`/api/job/${jobId}/log?offset=0`);
         const ld = await lr.json();
         const jobStatus = ld.job_status || 'unknown';
         con.textContent = ld.content || (jobStatus === 'running' ? 'Initializing...' : 'No output captured.');
         currentOffset = ld.offset;
         con.scrollTop = con.scrollHeight;
-        if (jobStatus === 'running' || jobStatus === 'pending') startPolling(jobId, command);
-        if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus }, con.textContent);
+        if (jobStatus === 'running' || jobStatus === 'pending') startStreaming(jobId, command);
+        if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus, job_type: ld.job_type }, con.textContent);
     } catch (e) { console.error('Error showing job:', e); }
 }
 
 function closeConsole() {
-    stopPolling();
+    stopStreaming();
     document.getElementById('active-job-id').textContent = 'Ready';
     document.getElementById('close-console').style.display = 'none';
     document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
@@ -334,32 +338,37 @@ function closeConsole() {
 async function refreshHistory() {
     try {
         const r = await fetch('/api/jobs');
-        let jobs = await r.json();
-        const showCronEl = document.getElementById('show-cron');
-        const showCron = showCronEl ? showCronEl.checked : true;
-        const searchInput = document.getElementById('history-search');
-        const q = searchInput ? searchInput.value.toLowerCase().trim() : '';
-        const clearBtn = document.getElementById('clear-search');
-        if (clearBtn) clearBtn.style.display = q ? 'block' : 'none';
+        const jobs = await r.json();
+        renderHistory(jobs);
+    } catch (e) { console.error('Error refreshing history:', e); }
+}
 
-        jobs = jobs.filter(j => (showCron || !j.is_cron) && (!q || j.command.toLowerCase().includes(q)));
-        const hl = document.getElementById('history-list');
-        if (!hl) return;
-        hl.innerHTML = '';
+function renderHistory(jobs) {
+    const showCronEl = document.getElementById('show-cron');
+    const showCron = showCronEl ? showCronEl.checked : true;
+    const searchInput = document.getElementById('history-search');
+    const q = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    const clearBtn = document.getElementById('clear-search');
+    if (clearBtn) clearBtn.style.display = q ? 'block' : 'none';
 
-        jobs.forEach(job => {
-            const item = document.createElement('div');
-            item.className = 'history-item';
-            if (job.is_cron) item.classList.add('cron-job');
-            item.title = job.command;
-            item.onclick = () => { currentOffset = 0; showJob(job.id, job.command); };
-            const d = new Date(job.created_at + 'Z');
-            const timeStr = d.toLocaleTimeString();
-            const dateStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-            let cmdDisplay = job.command.startsWith('python3 ') ? job.command.substring(8) : job.command;
-            const cronTag = job.is_cron ? '<span class="cron-badge">CRON</span>' : '';
-            const runCmdEsc = job.command.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-            item.innerHTML = `
+    const filtered = jobs.filter(j => (showCron || !j.is_cron) && (!q || j.command.toLowerCase().includes(q)));
+    const hl = document.getElementById('history-list');
+    if (!hl) return;
+    hl.innerHTML = '';
+
+    filtered.forEach(job => {
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        if (job.is_cron) item.classList.add('cron-job');
+        item.title = job.command;
+        item.onclick = () => { currentOffset = 0; showJob(job.id, job.command); };
+        const d = new Date(job.created_at + 'Z');
+        const timeStr = d.toLocaleTimeString();
+        const dateStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        let cmdDisplay = job.command.startsWith('python3 ') ? job.command.substring(8) : job.command;
+        const cronTag = job.is_cron ? '<span class="cron-badge">CRON</span>' : '';
+        const runCmdEsc = job.command.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+        item.innerHTML = `
                 <div class="job-info" onclick="showJob(${job.id})">
                     <span class="job-time">${dateStr} ${timeStr}</span>
                     <span class="job-cmd">${cmdDisplay}</span>${cronTag}
@@ -369,9 +378,8 @@ async function refreshHistory() {
                     <button class="action-job-btn rerun-btn" onclick="runCommand('${runCmdEsc}','Rerun',${job.is_cron ? 1 : 0});event.stopPropagation()" title="Rerun">▶</button>
                     <button class="action-job-btn delete-btn" onclick="deleteJob(${job.id},'${job.status}');event.stopPropagation()" title="Delete">✕</button>
                 </div>`;
-            hl.appendChild(item);
-        });
-    } catch (e) { console.error('Error refreshing history:', e); }
+        hl.appendChild(item);
+    });
 }
 
 async function deleteJob(id, status) {
@@ -386,8 +394,7 @@ async function deleteJob(id, status) {
     try {
         await fetch(`/api/job/${id}`, { method: 'DELETE' });
         if (activeJobId === id) {
-            if (pollInterval) clearInterval(pollInterval);
-            activeJobId = null;
+            stopStreaming();
             document.getElementById('active-job-id').textContent = 'Ready';
             document.getElementById('close-console').style.display = 'none';
             document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
@@ -407,32 +414,37 @@ let editingScheduleId = null;
 async function refreshSchedules() {
     try {
         const r = await fetch('/api/schedules');
-        let schedules = await r.json();
-        const si = document.getElementById('schedule-search');
-        if (si) {
-            const q = si.value.toLowerCase().trim();
-            const cb = document.getElementById('clear-schedule-search');
-            if (cb) cb.style.display = q ? 'block' : 'none';
-            if (q) schedules = schedules.filter(s => s.label.toLowerCase().includes(q) || s.command.toLowerCase().includes(q));
+        const schedules = await r.json();
+        renderSchedules(schedules);
+    } catch (e) { console.error('Error refreshing schedules:', e); }
+}
+
+function renderSchedules(schedules) {
+    const si = document.getElementById('schedule-search');
+    if (si) {
+        const q = si.value.toLowerCase().trim();
+        const cb = document.getElementById('clear-schedule-search');
+        if (cb) cb.style.display = q ? 'block' : 'none';
+        if (q) schedules = schedules.filter(s => s.label.toLowerCase().includes(q) || s.command.toLowerCase().includes(q));
+    }
+    const list = document.getElementById('schedule-list');
+    if (!list) return;
+    list.innerHTML = '';
+    schedules.forEach(s => {
+        const item = document.createElement('div');
+        item.className = 'schedule-item';
+        if (!s.enabled) item.classList.add('disabled');
+        const isEdit = editingScheduleId === s.id;
+        const dc = s.command.startsWith('python3 ') ? s.command.substring(8) : s.command;
+        let nrs = '';
+        if (s.enabled && s.next_run_iso) {
+            const nd = new Date(s.next_run_iso);
+            const ts = nd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const dm = s.minutes_until;
+            let rs = dm === 0 ? 'due now' : dm < 60 ? `in ${dm}m` : dm < 1440 ? `in ${Math.floor(dm / 60)}h ${dm % 60}m` : `in ${Math.floor(dm / 1440)}d`;
+            nrs = `<div class="schedule-subtitle">Next run: ${ts} (${rs})</div>`;
         }
-        const list = document.getElementById('schedule-list');
-        if (!list) return;
-        list.innerHTML = '';
-        schedules.forEach(s => {
-            const item = document.createElement('div');
-            item.className = 'schedule-item';
-            if (!s.enabled) item.classList.add('disabled');
-            const isEdit = editingScheduleId === s.id;
-            const dc = s.command.startsWith('python3 ') ? s.command.substring(8) : s.command;
-            let nrs = '';
-            if (s.enabled && s.next_run_iso) {
-                const nd = new Date(s.next_run_iso);
-                const ts = nd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                const dm = s.minutes_until;
-                let rs = dm === 0 ? 'due now' : dm < 60 ? `in ${dm}m` : dm < 1440 ? `in ${Math.floor(dm / 60)}h ${dm % 60}m` : `in ${Math.floor(dm / 1440)}d`;
-                nrs = `<div class="schedule-subtitle">Next run: ${ts} (${rs})</div>`;
-            }
-            item.innerHTML = `
+        item.innerHTML = `
                 ${s.catch_up ? '<div class="catch-up-overlay" title="Catch Up Enabled">⚡</div>' : ''}
                 <div class="schedule-info" onclick="filterHistoryByCron('${dc}')">
                     <div class="schedule-label">${isEdit ? `<input type="text" id="edit-label-${s.id}" value="${s.label}" onkeypress="handleEditKP(event,${s.id})">` : s.label}</div>
@@ -446,9 +458,8 @@ async function refreshSchedules() {
                     <div class="dropdown-item" onclick="toggleCatchUp(${s.id},${s.catch_up || 0})">${s.catch_up ? 'Disable Catch Up' : 'Enable Catch Up'}</div>
                     <div class="dropdown-item warning" onclick="deleteSchedule(${s.id})">Delete</div>
                 </div></div></div>`;
-            list.appendChild(item);
-        });
-    } catch (e) { console.error('Error refreshing schedules:', e); }
+        list.appendChild(item);
+    });
 }
 
 function startEditSchedule(id) { editingScheduleId = id; refreshSchedules(); }
