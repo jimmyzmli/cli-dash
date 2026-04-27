@@ -233,6 +233,10 @@ def _recovery_worker(db: Database, job_id: int, pid: int, data_dir: str):
 def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
              is_cron=0, job_type='command'):
     """Create a job record and start execution in a daemon thread."""
+    exec_prefix = os.getenv("WEB_UI_JOB_EXEC")
+    if exec_prefix and not command.startswith(f"{exec_prefix} "):
+        command = f"{exec_prefix} {command}"
+
     job_id = db.create_job(command, is_cron=is_cron, job_type=job_type)
     thread = threading.Thread(
         target=run_command_task,

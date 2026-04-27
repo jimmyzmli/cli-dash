@@ -101,7 +101,7 @@ function buildCommandsHTML() {
         <div class="card">
             <h2><span class="icon">⌨️</span> Custom Command</h2>
             <div class="custom-cmd-input">
-                <input type="text" id="custom-command" list="command-presets" placeholder="e.g. python3 script.py --flag">
+                <input type="text" id="custom-command" list="command-presets" placeholder="e.g. my-script.py --flag">
                 <button onclick="runCustomCommand()">Run</button>
                 <datalist id="command-presets"></datalist>
             </div>
@@ -221,8 +221,7 @@ async function loadCommands() {
 
 // --- Run Command ---
 async function runCommand(command, label, isCron = 0) {
-    if (!command.startsWith('python3 ') && !command.startsWith('python ') && !command.startsWith('pythonw ') && !command.startsWith('py ') && (command.endsWith('.py') || command.includes('.py ')))
-        command = 'python3 ' + command;
+    // Command prefixing is now handled server-side via WEB_UI_JOB_EXEC
 
     // Apply header option flags
     const appConfig = window._appConfig || {};
@@ -365,7 +364,7 @@ function renderHistory(jobs) {
         const d = new Date(job.created_at + 'Z');
         const timeStr = d.toLocaleTimeString();
         const dateStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-        let cmdDisplay = job.command.startsWith('python3 ') ? job.command.substring(8) : job.command;
+        let cmdDisplay = job.command;
         const cronTag = job.is_cron ? '<span class="cron-badge">CRON</span>' : '';
         const runCmdEsc = job.command.replace(/'/g, "\\'").replace(/"/g, '&quot;');
         item.innerHTML = `
@@ -429,7 +428,7 @@ function renderSchedules(schedules) {
         item.className = 'schedule-item';
         if (!s.enabled) item.classList.add('disabled');
         const isEdit = editingScheduleId === s.id;
-        const dc = s.command.startsWith('python3 ') ? s.command.substring(8) : s.command;
+        const dc = s.command;
         let nrs = '';
         if (s.enabled && s.next_run_iso) {
             const nd = new Date(s.next_run_iso);
