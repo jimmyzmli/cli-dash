@@ -303,7 +303,7 @@ def create_app(config: AppConfig, db: Database):
     """
     from fastapi import FastAPI, Request, HTTPException
     from fastapi.staticfiles import StaticFiles
-    from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
+    from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse, Response
     import asyncio
 
     app = FastAPI(title=config.title)
@@ -561,6 +561,15 @@ def create_app(config: AppConfig, db: Database):
         pkg_path = os.path.join(pkg_web_ui, path)
         if os.path.isfile(pkg_path):
             return FileResponse(pkg_path)
+        
+        # Graceful fallback for optional files to avoid 404
+        if path in ["extensions.js", "extensions.css", "favicon.ico"]:
+            if path == "favicon.ico":
+                media_type = "image/x-icon"
+            else:
+                media_type = "application/javascript" if path.endswith(".js") else "text/css"
+            return Response(content="", media_type=media_type)
+
         raise HTTPException(status_code=404, detail=f"Static file not found: {path}")
 
     return app

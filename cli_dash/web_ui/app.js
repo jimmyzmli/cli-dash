@@ -26,9 +26,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (r.ok) { const d = await r.json(); if (d.title) document.title = d.title; }
     } catch (e) { }
 
-    // Apply icon + title
+    // Apply icon + title + favicon
     if (appConfig.icon) document.getElementById('app-icon').textContent = appConfig.icon;
     if (appConfig.title) document.getElementById('app-title').textContent = appConfig.title;
+    
+    const favicon = document.getElementById('favicon');
+    if (appConfig.favicon) {
+        favicon.href = appConfig.favicon;
+    } else if (appConfig.icon) {
+        favicon.href = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>${appConfig.icon}</text></svg>`;
+    }
 
     // Build header options
     const headerContainer = document.getElementById('header-options');
@@ -329,6 +336,7 @@ function closeConsole() {
     document.getElementById('active-job-id').textContent = 'Ready';
     document.getElementById('close-console').style.display = 'none';
     document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
+    if (window.onConsoleClose) window.onConsoleClose();
     if (window.location.pathname !== '/') window.history.pushState(null, '', '/');
 }
 
