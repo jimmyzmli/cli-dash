@@ -11,12 +11,59 @@ import time
 import json
 import logging
 import threading
+import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, List
 
 from cli_dash.database import Database
+
+
+class Broadcaster:
+    """Manages SSE connections and broadcasts events to all active clients."""
+    def __init__(self):
+        self.queues: List[asyncio.Queue] = []
+        self._lock = threading.Lock()
+        self.loop = None
+
+    def set_loop(self, loop):
+        self.loop = loop
+
+    async def subscribe(self):
+        queue = asyncio.Queue()
+        with self._lock:
+            self.queues.append(queue)
+            logging.info(f"SSE client subscribed. Total clients: {len(self.queues)}")
+        try:
+            yield queue
+        finally:
+            with self._lock:
+                self.queues.remove(queue)
+                logging.info(f"SSE client unsubscribed. Total clients: {len(self.queues)}")
+
+    def publish(self, event_type: str, data: dict):
+        if not self.loop:
+            logging.warning(f"Broadcaster loop not set, cannot publish {event_type}")
+            return
+        
+        message = {
+            "event": event_type,
+            "data": data
+        }
+        
+        def _put():
+            logging.info(f"Broadcaster publishing {event_type} to {len(self.queues)} clients")
+            for q in self.queues:
+                try:
+                    q.put_nowait(message)
+                except Exception as e:
+                    logging.error(f"Error putting to SSE queue: {e}")
+
+        self.loop.call_soon_threadsafe(_put)
+
+# Global broadcaster instance
+broadcaster = Broadcaster()
 
 
 @dataclass
@@ -82,12 +129,14 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
 
         with open(log_path, "w", encoding="utf-8") as log_file:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_file.write(f"[{timestamp}] Starting job: {command}\n")
+            start_msg = f"[{timestamp}] Starting job: {command}\n"
+            log_file.write(start_msg)
             log_file.flush()
+            broadcaster.publish("log", {"job_id": job_id, "content": start_msg})
 
             popen_kwargs = {
                 "shell": True,
-                "stdout": log_file,
+                "stdout": subprocess.PIPE,
                 "stderr": subprocess.STDOUT,
                 "env": env,
                 "text": True,
@@ -106,17 +155,30 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
 
             process = subprocess.Popen(command, **popen_kwargs)
             db.update_job(job_id, pid=process.pid)
+            broadcaster.publish("jobs", {"action": "updated", "job_id": job_id})
+
+            # Read output in real-time
+            for line in process.stdout:
+                log_file.write(line)
+                log_file.flush()
+                broadcaster.publish("log", {"job_id": job_id, "content": line})
 
             return_code = process.wait()
             end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             status = "completed" if return_code == 0 else "failed"
-            log_file.write(f"[{end_timestamp}] Job {status} with exit code {return_code}\n")
+            end_msg = f"[{end_timestamp}] Job {status} with exit code {return_code}\n"
+            log_file.write(end_msg)
             db.update_job(job_id, status=status, finished=True)
+            broadcaster.publish("log", {"job_id": job_id, "content": end_msg})
+            broadcaster.publish("jobs", {"action": "updated", "job_id": job_id})
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as log_file:
             err_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_file.write(f"\n[{err_timestamp}] [SERVER ERROR] {str(e)}\n")
+            err_msg = f"\n[{err_timestamp}] [SERVER ERROR] {str(e)}\n"
+            log_file.write(err_msg)
         db.update_job(job_id, status="failed", finished=True)
+        broadcaster.publish("log", {"job_id": job_id, "content": err_msg})
+        broadcaster.publish("jobs", {"action": "updated", "job_id": job_id})
 
 def is_pid_running(pid):
     """Check if a process is running by PID."""
@@ -178,6 +240,7 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
         daemon=True,
     )
     thread.start()
+    broadcaster.publish("jobs", {"action": "created", "job_id": job_id})
     return job_id
 
 
@@ -218,6 +281,7 @@ def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
                         logging.info("Triggering scheduled job: %s", s["label"])
                         _run_job(db, s["command"], data_dir, extra_env=extra_env, is_cron=1)
                         db.update_schedule(s["id"], last_run=now.strftime("%Y-%m-%d %H:%M:%S"))
+                        broadcaster.publish("schedules", {"action": "updated", "schedule_id": s["id"]})
                 except Exception as e:
                     logging.error("Error processing schedule %s: %s", s["label"], e)
         except Exception as e:
@@ -236,8 +300,21 @@ def create_app(config: AppConfig, db: Database):
     from fastapi import FastAPI, Request, HTTPException
     from fastapi.staticfiles import StaticFiles
     from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse
+    import asyncio
 
     app = FastAPI(title=config.title)
+
+    @app.on_event("startup")
+    async def startup():
+        broadcaster.set_loop(asyncio.get_running_loop())
+        logging.info("Broadcaster loop initialized")
+        
+        async def ping_loop():
+            while True:
+                await asyncio.sleep(60) # Heartbeat every minute
+                broadcaster.publish("ping", {})
+        
+        asyncio.create_task(ping_loop())
 
     pkg_web_ui = _get_package_web_ui()
     project_web_ui = _get_project_web_ui(config)
@@ -328,6 +405,7 @@ def create_app(config: AppConfig, db: Database):
         if job and job.get("pid"):
             terminate_process(job["pid"])
         db.delete_job(job_id)
+        broadcaster.publish("jobs", {"action": "deleted", "job_id": job_id})
         log_path = os.path.join(data_dir, "jobs", f"{job_id}.log")
         if os.path.exists(log_path):
             try:
@@ -338,7 +416,10 @@ def create_app(config: AppConfig, db: Database):
 
     @app.get("/api/job/{job_id}/log")
     async def get_job_log(job_id: int, offset: int = 0):
-        """Return log content from offset. Used for initial load and finished jobs."""
+        """
+        Simple REST log endpoint. Returns current log content from offset.
+        Used for initial load; real-time updates now use SSE (/api/events).
+        """
         log_path = os.path.join(data_dir, "jobs", f"{job_id}.log")
         job = db.get_job(job_id)
         job_status = job["status"] if job else "unknown"
@@ -354,45 +435,32 @@ def create_app(config: AppConfig, db: Database):
         return {"content": content, "offset": new_offset,
                 "job_status": job_status, "job_type": job_type}
 
-    @app.get("/api/job/{job_id}/stream")
-    async def stream_job_log(job_id: int, offset: int = 0):
+    @app.get("/api/events")
+    async def sse_events(request: Request):
         """
-        SSE stream for live log tailing. Single persistent connection —
-        server pushes new content every ~1s. No polling overhead.
+        Unified SSE stream for jobs, schedules, and logs.
         """
-        import asyncio as _asyncio
-        import json as _json
-
-        log_path = os.path.join(data_dir, "jobs", f"{job_id}.log")
-
         async def event_generator():
-            current_offset = offset
-            while True:
-                job = db.get_job(job_id)
-                job_status = job["status"] if job else "unknown"
-                job_type = job.get("job_type", "command") if job else "command"
+            # Send initial event to confirm connection
+            try:
+                yield "event: connected\ndata: {}\n\n"
+            except Exception:
+                return
 
-                content = ""
-                if os.path.exists(log_path):
-                    with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                        f.seek(current_offset)
-                        content = f.read()
-                        current_offset = f.tell()
-
-                # Always send an event (even empty) so client gets status updates
-                payload = _json.dumps({
-                    "content": content,
-                    "offset": current_offset,
-                    "job_status": job_status,
-                    "job_type": job_type,
-                })
-                yield f"data: {payload}\n\n"
-
-                # Stop streaming if job is done
-                if job_status not in ("running", "pending"):
-                    return
-
-                await _asyncio.sleep(1)
+            async for queue in broadcaster.subscribe():
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    try:
+                        msg = await asyncio.wait_for(queue.get(), timeout=1.0)
+                        yield f"event: {msg['event']}\ndata: {json.dumps(msg['data'])}\n\n"
+                    except asyncio.TimeoutError:
+                        continue
+                    except asyncio.CancelledError:
+                        break
+                    except Exception:
+                        break
+                break
 
         return StreamingResponse(
             event_generator(),
@@ -401,61 +469,7 @@ def create_app(config: AppConfig, db: Database):
                 "Cache-Control": "no-cache",
                 "Connection": "keep-alive",
                 "X-Accel-Buffering": "no",
-            },
-        )
-
-    @app.get("/api/state/stream")
-    async def stream_state():
-        """
-        Unified SSE stream for dashboard state (jobs + schedules).
-        Pushes updates every 5 seconds over a single persistent connection,
-        replacing separate polling intervals for jobs, schedules, and status.
-        """
-        import asyncio as _asyncio
-        import json as _json
-        from croniter import croniter
-
-        def _build_schedules():
-            schedules = db.get_schedules()
-            now = datetime.now()
-            for s in schedules:
-                if not s["enabled"]:
-                    s["next_run_iso"] = None
-                    s["minutes_until"] = 999999
-                    continue
-                try:
-                    cron_iter = croniter(s["cron_expr"], now)
-                    next_run = cron_iter.get_next(datetime)
-                    s["next_run_iso"] = next_run.isoformat()
-                    s["minutes_until"] = int((next_run - now).total_seconds() / 60)
-                except Exception:
-                    s["next_run_iso"] = None
-                    s["minutes_until"] = 999999
-            schedules.sort(key=lambda x: x["minutes_until"])
-            return schedules
-
-        async def event_generator():
-            while True:
-                try:
-                    jobs = db.get_jobs()
-                    schedules = _build_schedules()
-                    payload = _json.dumps({
-                        "jobs": jobs,
-                        "schedules": schedules,
-                    })
-                    yield f"data: {payload}\n\n"
-                except Exception as e:
-                    logging.error(f"State stream error: {e}")
-                await _asyncio.sleep(5)
-
-        return StreamingResponse(
-            event_generator(),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-            },
+            }
         )
 
     # Schedules API
@@ -489,6 +503,7 @@ def create_app(config: AppConfig, db: Database):
         data = await request.json()
         db.create_schedule(data["label"], data["command"], data["cron_expr"],
                            catch_up=data.get("catch_up", 0))
+        broadcaster.publish("schedules", {"action": "created"})
         return {"status": "created"}
 
     @app.patch("/api/schedules/{schedule_id}")
@@ -502,11 +517,13 @@ def create_app(config: AppConfig, db: Database):
             cron_expr=data.get("cron_expr"),
             catch_up=data.get("catch_up"),
         )
+        broadcaster.publish("schedules", {"action": "updated", "schedule_id": schedule_id})
         return {"status": "updated"}
 
     @app.delete("/api/schedules/{schedule_id}")
     async def delete_schedule(schedule_id: int):
         db.delete_schedule(schedule_id)
+        broadcaster.publish("schedules", {"action": "deleted", "schedule_id": schedule_id})
         return {"status": "deleted"}
 
     # Run command endpoint

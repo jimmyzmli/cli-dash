@@ -73,30 +73,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Run extension init hooks
     window.dashExtensions.onInit.forEach(fn => fn());
 
-    // Route + initial load
+    // Route + SSE initialization
     handleRoute();
     refreshHistory();
     refreshSchedules();
     checkStatus();
-
-    // SSE state stream — replaces setInterval for jobs + schedules
-    const stateSource = new EventSource('/api/state/stream');
-    stateSource.onmessage = (event) => {
-        try {
-            const state = JSON.parse(event.data);
-            renderHistory(state.jobs);
-            renderSchedules(state.schedules);
-            // Connection is alive = server is up
-            document.getElementById('server-status').style.backgroundColor = 'var(--success-color)';
-            document.getElementById('server-status').style.boxShadow = '0 0 8px var(--success-color)';
-            document.getElementById('status-text').textContent = 'Connected';
-        } catch (e) { console.error('State stream parse error:', e); }
-    };
-    stateSource.onerror = () => {
-        document.getElementById('server-status').style.backgroundColor = 'var(--error-color)';
-        document.getElementById('server-status').style.boxShadow = '0 0 8px var(--error-color)';
-        document.getElementById('status-text').textContent = 'Disconnected';
-    };
+    
+    setupSSE();
+    
+    // Visibility-aware SSE
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+            if (window._sse) { window._sse.close(); window._sse = null; }
+        } else {
+            setupSSE();
+            refreshHistory();
+            refreshSchedules();
+            checkStatus();
+        }
+    });
 });
 
 function buildCommandsHTML() {
@@ -240,7 +235,11 @@ async function runCommand(command, label, isCron = 0) {
     try {
         const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron }) });
         const data = await r.json();
-        if (data.job_id) { currentOffset = 0; startStreaming(data.job_id, label); refreshHistory(); }
+        if (data.job_id) { 
+            currentOffset = 0; 
+            // SSE will handle the log streaming and history refresh
+            showJob(data.job_id, label); 
+        }
     } catch (e) { console.error('Error running command:', e); alert('Failed to start command'); }
 }
 
@@ -259,74 +258,75 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 100);
 });
 
-// --- SSE Live Streaming ---
-let eventSource = null;  // Active EventSource connection
+// --- Unified SSE ---
+function setupSSE() {
+    if (window._sse) window._sse.close();
+    const sse = new EventSource('/api/events');
+    window._sse = sse;
 
-function startStreaming(jobId, label) {
-    stopStreaming();
-    activeJobId = jobId;
-    document.getElementById('active-job-id').textContent = `Running: ${label} (#${jobId})`;
-    document.getElementById('close-console').style.display = 'block';
-    const con = document.getElementById('console');
-    if (currentOffset === 0) con.innerHTML = `<div class="running-indicator">Initializing ${label}...</div>`;
-
-    eventSource = new EventSource(`/api/job/${jobId}/stream?offset=${currentOffset}`);
-    eventSource.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        const jobStatus = data.job_status || 'unknown';
-
-        if (currentOffset === 0 && (data.content || jobStatus !== 'pending')) con.textContent = '';
-        if (data.content) {
-            const atBottom = con.scrollHeight - con.scrollTop <= con.clientHeight + 50;
-            con.textContent += data.content;
-            currentOffset = data.offset;
-            if (atBottom) con.scrollTop = con.scrollHeight;
-            if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus, job_type: data.job_type }, con.textContent);
-        } else if (currentOffset === 0 && jobStatus !== 'running' && jobStatus !== 'pending') {
-            con.textContent = 'No output captured.';
+    sse.addEventListener('jobs', (e) => { 
+        refreshHistory(); 
+    });
+    sse.addEventListener('schedules', (e) => { 
+        refreshSchedules(); 
+    });
+    sse.addEventListener('log', (e) => {
+        const data = JSON.parse(e.data);
+        if (activeJobId === data.job_id) {
+            const con = document.getElementById('console');
+            if (con) {
+                // If this is the first log line and we have a placeholder, clear it
+                if (con.querySelector('.placeholder') || con.querySelector('.running-indicator')) con.textContent = '';
+                
+                const atBottom = con.scrollHeight - con.scrollTop <= con.clientHeight + 50;
+                con.textContent += data.content;
+                if (atBottom) con.scrollTop = con.scrollHeight;
+                
+                if (window.onJobLogUpdate) window.onJobLogUpdate({ status: 'running' }, con.textContent);
+            }
         }
+    });
 
-        if (jobStatus !== 'running' && jobStatus !== 'pending') {
-            stopStreaming();
-            document.getElementById('active-job-id').textContent = `Finished: ${label} (#${jobId})`;
-            refreshHistory();
-        }
+    sse.onopen = () => {
+        console.log('SSE connection opened');
+        document.getElementById('server-status').style.backgroundColor = 'var(--success-color)';
+        document.getElementById('server-status').style.boxShadow = '0 0 8px var(--success-color)';
+        document.getElementById('status-text').textContent = 'Connected';
     };
-    eventSource.onerror = () => {
-        // SSE auto-reconnects; if job is done the stream closes cleanly
-        stopStreaming();
+
+    sse.addEventListener('connected', () => {});
+    sse.addEventListener('ping', () => {});
+
+    sse.onerror = () => {
+        console.warn('SSE connection lost. Retrying in 5s...');
+        document.getElementById('server-status').style.backgroundColor = 'var(--error-color)';
+        document.getElementById('server-status').style.boxShadow = '0 0 8px var(--error-color)';
+        document.getElementById('status-text').textContent = 'Disconnected';
+        sse.close();
+        setTimeout(setupSSE, 5000);
     };
 }
 
-function stopStreaming() {
-    if (eventSource) { eventSource.close(); eventSource = null; }
-    activeJobId = null;
-}
-
-async function showJob(jobId, command) {
-    stopStreaming();
-    if (window.location.pathname !== `/job/${jobId}`) window.history.pushState({}, '', `/job/${jobId}`);
-    activeJobId = jobId;
-    document.getElementById('active-job-id').textContent = `Viewing: #${jobId}`;
+async function showJob(job_id, label) {
+    if (window.location.pathname !== `/job/${job_id}`) window.history.pushState({}, '', `/job/${job_id}`);
+    activeJobId = job_id;
+    document.getElementById('active-job-id').textContent = `Viewing: ${label || `#${job_id}`}`;
     document.getElementById('close-console').style.display = 'block';
     const con = document.getElementById('console');
     con.textContent = 'Loading output...';
     currentOffset = 0;
     try {
-        // Single GET for initial load (full log + status)
-        const lr = await fetch(`/api/job/${jobId}/log?offset=0`);
+        const lr = await fetch(`/api/job/${job_id}/log?offset=0`);
         const ld = await lr.json();
         const jobStatus = ld.job_status || 'unknown';
         con.textContent = ld.content || (jobStatus === 'running' ? 'Initializing...' : 'No output captured.');
-        currentOffset = ld.offset;
         con.scrollTop = con.scrollHeight;
-        if (jobStatus === 'running' || jobStatus === 'pending') startStreaming(jobId, command);
-        if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus, job_type: ld.job_type }, con.textContent);
+        if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus }, con.textContent);
     } catch (e) { console.error('Error showing job:', e); }
 }
 
 function closeConsole() {
-    stopStreaming();
+    activeJobId = null;
     document.getElementById('active-job-id').textContent = 'Ready';
     document.getElementById('close-console').style.display = 'none';
     document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
@@ -393,13 +393,7 @@ async function deleteJob(id, status) {
     if (!confirm(msg)) return;
     try {
         await fetch(`/api/job/${id}`, { method: 'DELETE' });
-        if (activeJobId === id) {
-            stopStreaming();
-            document.getElementById('active-job-id').textContent = 'Ready';
-            document.getElementById('close-console').style.display = 'none';
-            document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
-            history.pushState(null, '', '/');
-        }
+        if (activeJobId === id) closeConsole();
         refreshHistory();
     } catch (e) { console.error('Error deleting job:', e); }
 }
