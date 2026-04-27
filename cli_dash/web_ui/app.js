@@ -282,7 +282,7 @@ function setupSSE() {
                 con.textContent += data.content;
                 if (atBottom) con.scrollTop = con.scrollHeight;
                 
-                if (window.onJobLogUpdate) window.onJobLogUpdate({ status: 'running' }, con.textContent);
+                if (window.onJobLogUpdate) window.onJobLogUpdate(data, con.textContent);
             }
         }
     });
@@ -321,7 +321,7 @@ async function showJob(job_id, label) {
         const jobStatus = ld.job_status || 'unknown';
         con.textContent = ld.content || (jobStatus === 'running' ? 'Initializing...' : 'No output captured.');
         con.scrollTop = con.scrollHeight;
-        if (window.onJobLogUpdate) window.onJobLogUpdate({ status: jobStatus }, con.textContent);
+        if (window.onJobLogUpdate) window.onJobLogUpdate(ld, con.textContent);
     } catch (e) { console.error('Error showing job:', e); }
 }
 

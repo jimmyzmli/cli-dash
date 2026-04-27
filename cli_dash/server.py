@@ -111,7 +111,7 @@ def _seed_schedules(db: Database, schedules_file: str):
 
 
 def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
-                     extra_env: Optional[dict] = None):
+                     extra_env: Optional[dict] = None, job_type: str = 'command'):
     """Execute a shell command in a background thread, streaming output to a log file."""
     db.update_job(job_id, status="running")
     log_dir = os.path.join(data_dir, "jobs")
@@ -132,7 +132,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
             start_msg = f"[{timestamp}] Starting job: {command}\n"
             log_file.write(start_msg)
             log_file.flush()
-            broadcaster.publish("log", {"job_id": job_id, "content": start_msg})
+            broadcaster.publish("log", {"job_id": job_id, "content": start_msg, "job_type": job_type})
 
             popen_kwargs = {
                 "shell": True,
@@ -161,7 +161,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
             for line in process.stdout:
                 log_file.write(line)
                 log_file.flush()
-                broadcaster.publish("log", {"job_id": job_id, "content": line})
+                broadcaster.publish("log", {"job_id": job_id, "content": line, "job_type": job_type})
 
             return_code = process.wait()
             end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -169,7 +169,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
             end_msg = f"[{end_timestamp}] Job {status} with exit code {return_code}\n"
             log_file.write(end_msg)
             db.update_job(job_id, status=status, finished=True)
-            broadcaster.publish("log", {"job_id": job_id, "content": end_msg})
+            broadcaster.publish("log", {"job_id": job_id, "content": end_msg, "job_type": job_type})
             broadcaster.publish("jobs", {"action": "updated", "job_id": job_id})
     except Exception as e:
         with open(log_path, "a", encoding="utf-8") as log_file:
@@ -177,7 +177,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
             err_msg = f"\n[{err_timestamp}] [SERVER ERROR] {str(e)}\n"
             log_file.write(err_msg)
         db.update_job(job_id, status="failed", finished=True)
-        broadcaster.publish("log", {"job_id": job_id, "content": err_msg})
+        broadcaster.publish("log", {"job_id": job_id, "content": err_msg, "job_type": job_type})
         broadcaster.publish("jobs", {"action": "updated", "job_id": job_id})
 
 def is_pid_running(pid):
@@ -236,7 +236,7 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
     job_id = db.create_job(command, is_cron=is_cron, job_type=job_type)
     thread = threading.Thread(
         target=run_command_task,
-        args=(db, job_id, command, data_dir, extra_env),
+        args=(db, job_id, command, data_dir, extra_env, job_type),
         daemon=True,
     )
     thread.start()
