@@ -152,6 +152,8 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
                     subprocess.CREATE_NEW_PROCESS_GROUP | 
                     0x08000000  # CREATE_NO_WINDOW
                 )
+            else:
+                popen_kwargs["start_new_session"] = True
 
             process = subprocess.Popen(command, **popen_kwargs)
             db.update_job(job_id, pid=process.pid)
@@ -200,17 +202,21 @@ def is_pid_running(pid):
             return False
 
 def terminate_process(pid):
-    """Kill a process by PID."""
+    """Kill a process tree by PID."""
     if not is_pid_running(pid):
         return
     if os.name == "nt":
-        subprocess.run(["taskkill", "/F", "/PID", str(pid)], 
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], 
                        creationflags=0x08000000, shell=True)
     else:
         try:
-            os.kill(pid, signal.SIGTERM)
+            pgid = os.getpgid(pid)
+            os.killpg(pgid, signal.SIGKILL)
         except OSError:
-            pass
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
 
 def _recovery_worker(db: Database, job_id: int, pid: int, data_dir: str):
     """Monitor an orphaned background process and update job status when it finishes."""
