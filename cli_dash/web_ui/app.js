@@ -387,10 +387,40 @@ const ScheduledView = {
             window.dispatchEvent(new CustomEvent('filter-history', { detail: cmd }));
         };
 
+        const exportSchedules = async () => {
+            try {
+                const r = await fetch('/api/schedules/export', { method: 'POST' });
+                if (r.ok) {
+                    const data = await r.json();
+                    alert(`Exported successfully to ${data.path}`);
+                } else {
+                    alert('Failed to export schedules');
+                }
+            } catch (e) {
+                alert('Error exporting schedules');
+            }
+        };
+
+        const importSchedules = async () => {
+            if (!confirm('Are you sure you want to import from schedules.json? This will OVERWRITE all current schedules!')) return;
+            try {
+                const r = await fetch('/api/schedules/import', { method: 'POST' });
+                if (r.ok) {
+                    alert('Imported successfully');
+                    fetchSchedules();
+                } else {
+                    const err = await r.json();
+                    alert('Failed to import: ' + (err.detail || 'Unknown error'));
+                }
+            } catch (e) {
+                alert('Error importing schedules');
+            }
+        };
+
         return {
             schedules, searchQuery, filteredSchedules, showNew, newSched, saveNew,
             editingId, editData, startEdit, saveEdit, deleteSchedule, toggleEnabled, toggleCatchUp, formatNextRun,
-            runSchedule, filterHistory
+            runSchedule, filterHistory, exportSchedules, importSchedules
         };
     }
 };

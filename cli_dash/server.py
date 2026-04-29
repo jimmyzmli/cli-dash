@@ -93,6 +93,19 @@ def _get_project_web_ui(config: AppConfig):
     return None
 
 
+def _get_schedules_file_path(config: AppConfig) -> str:
+    schedules_file = config.schedules_file
+    if not schedules_file:
+        project_ui = _get_project_web_ui(config)
+        if project_ui:
+            candidate = os.path.join(project_ui, "config", "schedules.json")
+            if os.path.exists(candidate) or os.path.isdir(os.path.join(project_ui, "config")):
+                return candidate
+        candidate = os.path.join(_get_package_web_ui(), "config", "schedules.json")
+        return candidate
+    return schedules_file
+
+
 def _seed_schedules(db: Database, schedules_file: str):
     """Seed schedules from a JSON file if the DB has none."""
     existing = db.get_schedules()
@@ -536,6 +549,42 @@ def create_app(config: AppConfig, db: Database):
         broadcaster.publish("schedules", {"action": "deleted", "schedule_id": schedule_id})
         return {"status": "deleted"}
 
+    @app.post("/api/schedules/export")
+    async def export_schedules():
+        schedules = db.get_schedules()
+        out = []
+        for s in schedules:
+            out.append({
+                "label": s["label"],
+                "command": s["command"],
+                "cron": s["cron_expr"],
+                "catch_up": bool(s.get("catch_up", 0))
+            })
+        path = _get_schedules_file_path(config)
+        try:
+            with open(path, "w") as f:
+                json.dump(out, f, indent=4)
+            return {"status": "exported", "path": path}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+    @app.post("/api/schedules/import")
+    async def import_schedules():
+        path = _get_schedules_file_path(config)
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail="schedules.json not found")
+        
+        # Clear existing schedules directly
+        conn = db._connect()
+        c = conn.cursor()
+        c.execute('DELETE FROM schedules')
+        conn.commit()
+        conn.close()
+        
+        _seed_schedules(db, path)
+        broadcaster.publish("schedules", {"action": "imported"})
+        return {"status": "imported"}
+
     # Run command endpoint
 
     @app.post("/run")
@@ -727,18 +776,7 @@ class DashServer:
             logging.error(f"Error during job recovery: {e}")
 
         # Seed schedules
-        schedules_file = self.config.schedules_file
-        if not schedules_file:
-            # Auto-discover: project config/ first, then package config/
-            project_ui = _get_project_web_ui(self.config)
-            if project_ui:
-                candidate = os.path.join(project_ui, "config", "schedules.json")
-                if os.path.exists(candidate):
-                    schedules_file = candidate
-            if not schedules_file:
-                candidate = os.path.join(_get_package_web_ui(), "config", "schedules.json")
-                if os.path.exists(candidate):
-                    schedules_file = candidate
+        schedules_file = _get_schedules_file_path(self.config)
         _seed_schedules(self.db, schedules_file)
 
         # On-startup hook
@@ -826,17 +864,7 @@ class DashServer:
         self.db.init_db()
         print("Database initialized successfully.")
 
-        schedules_file = self.config.schedules_file
-        if not schedules_file:
-            project_ui = _get_project_web_ui(self.config)
-            if project_ui:
-                candidate = os.path.join(project_ui, "config", "schedules.json")
-                if os.path.exists(candidate):
-                    schedules_file = candidate
-            if not schedules_file:
-                candidate = os.path.join(_get_package_web_ui(), "config", "schedules.json")
-                if os.path.exists(candidate):
-                    schedules_file = candidate
+        schedules_file = _get_schedules_file_path(self.config)
         _seed_schedules(self.db, schedules_file)
         print("Core schedules seeded.")
 
@@ -850,6 +878,39 @@ class DashServer:
                         os.remove(os.path.join(log_dir, f))
                     except Exception as e:
                         print(f"Error removing {f}: {e}")
+
+    def export_schedules_cmd(self):
+        schedules = self.db.get_schedules()
+        out = []
+        for s in schedules:
+            out.append({
+                "label": s["label"],
+                "command": s["command"],
+                "cron": s["cron_expr"],
+                "catch_up": bool(s.get("catch_up", 0))
+            })
+        path = _get_schedules_file_path(self.config)
+        try:
+            with open(path, "w") as f:
+                json.dump(out, f, indent=4)
+            print(f"Exported {len(out)} schedules to {path}")
+        except Exception as e:
+            print(f"Error exporting schedules: {e}")
+
+    def import_schedules_cmd(self):
+        path = _get_schedules_file_path(self.config)
+        if not os.path.exists(path):
+            print(f"Error: {path} not found.")
+            return
+
+        conn = self.db._connect()
+        c = conn.cursor()
+        c.execute('DELETE FROM schedules')
+        conn.commit()
+        conn.close()
+
+        _seed_schedules(self.db, path)
+        print(f"Imported schedules from {path}")
 
     def run(self):
         """Parse CLI args and dispatch to start/stop/restart/db init."""
@@ -880,5 +941,9 @@ class DashServer:
             if os.path.exists(db_path):
                 os.remove(db_path)
             self.init_db_cmd()
+        elif args.command == "db" and args.action == "export":
+            self.export_schedules_cmd()
+        elif args.command == "db" and args.action == "import":
+            self.import_schedules_cmd()
         else:
             parser.print_help()

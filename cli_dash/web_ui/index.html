@@ -124,7 +124,11 @@
                 <div class="card-header" style="flex-direction:column;align-items:stretch;gap:10px; border:none; padding:0; margin-bottom: 15px;">
                     <div style="display:flex;justify-content:space-between;align-items:center">
                         <h2><span class="icon">📅</span> Cron Schedules</h2>
-                        <button class="icon-btn accent" @click="showNew = true" title="New Schedule">➕</button>
+                        <div style="display:flex;gap:5px;">
+                            <button class="icon-btn" @click="exportSchedules" title="Export to schedules.json">⬇️</button>
+                            <button class="icon-btn" @click="importSchedules" title="Import from schedules.json (Overwrite)">⬆️</button>
+                            <button class="icon-btn accent" @click="showNew = true" title="New Schedule">➕</button>
+                        </div>
                     </div>
                     <div class="search-wrapper">
                         <input type="text" v-model="searchQuery" placeholder="Search schedules..." style="width:100%">
