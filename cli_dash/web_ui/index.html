@@ -1,18 +1,27 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Control Center</title>
     <link rel="stylesheet" href="/static/style.css">
-    <link rel="icon" id="favicon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
+    <link rel="icon" id="favicon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>">
     <link rel="stylesheet" href="/static/extensions.css" onerror="this.remove()">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap"
+        rel="stylesheet">
     <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
-    <style> [v-cloak] { display: none !important; } </style>
+    <style>
+        [v-cloak] {
+            display: none !important;
+        }
+    </style>
 </head>
+
 <body>
     <div id="app" class="app-container" v-cloak>
         <header>
@@ -22,30 +31,30 @@
             </div>
             <div class="header-actions">
                 <div id="header-options">
-                    <div class="option-toggle" v-for="opt in allHeaderOptions" :key="opt.id" :id="opt.warn_off ? opt.id + '-option-container' : ''">
-                        <input type="checkbox" :id="opt.id + '-option'" v-model="headerState[opt.id]" @change="saveHeaderState(opt.id)">
+                    <div class="option-toggle" v-for="opt in allHeaderOptions" :key="opt.id"
+                        :id="opt.warn_off ? opt.id + '-option-container' : ''">
+                        <input type="checkbox" :id="opt.id + '-option'" v-model="headerState[opt.id]"
+                            @change="saveHeaderState(opt.id)">
                         <label :for="opt.id + '-option'">{{ opt.label }}</label>
                     </div>
                 </div>
                 <div class="status-indicator">
-                    <span id="server-status" class="status-dot" :style="{ backgroundColor: connected ? 'var(--success-color)' : 'var(--error-color)', boxShadow: connected ? '0 0 8px var(--success-color)' : '0 0 8px var(--error-color)' }"></span>
+                    <span id="server-status" class="status-dot"
+                        :style="{ backgroundColor: connected ? 'var(--success-color)' : 'var(--error-color)', boxShadow: connected ? '0 0 8px var(--success-color)' : '0 0 8px var(--error-color)' }"></span>
                     <span id="status-text">{{ connected ? 'Connected' : 'Disconnected' }}</span>
                 </div>
             </div>
         </header>
 
         <nav class="tabs" id="tab-bar">
-            <a v-for="tab in tabs" :key="tab.id"
-               :href="'#' + tab.label"
-               class="tab-link"
-               :class="{ active: currentTab === tab.id }"
-               @click="switchTab(tab)">
+            <a v-for="tab in tabs" :key="tab.id" :href="'#' + tab.label" class="tab-link"
+                :class="{ active: currentTab === tab.id }" @click="switchTab(tab)">
                 {{ tab.label }}
             </a>
         </nav>
 
-        <main :class="{ 'show-monitor': showMonitor, 'swiping': isSwiping }"
-              @touchstart="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd">
+        <main :class="{ 'show-monitor': showMonitor, 'swiping': isSwiping }" @touchstart="onTouchStart"
+            @touchmove="onTouchMove" @touchend="onTouchEnd">
             <div id="tab-views" :style="tabViewsStyle">
                 <div class="view" style="display: block">
                     <component :is="activeTabComponent"></component>
@@ -60,11 +69,13 @@
                         <h2><span class="icon">💻</span> Live Console</h2>
                         <div class="active-job-wrapper">
                             <div class="active-job-id">Viewing: {{ activeJobLabel }}</div>
-                            <button class="close-btn" v-if="activeJobId" @click="closeConsole" title="Close Console">✕</button>
+                            <button class="close-btn" v-if="activeJobId" @click="closeConsole"
+                                title="Close Console">✕</button>
                         </div>
                     </div>
                     <!-- Rclone / custom progress hook -->
-                    <component v-if="logComponent" :is="logComponent" :job="activeJob" :log-content="consoleContent"></component>
+                    <component v-if="logComponent" :is="logComponent" :job="activeJob" :log-content="consoleContent">
+                    </component>
                     <div id="console" class="console" ref="consoleEl">
                         <div v-if="!activeJobId" class="placeholder">Select a task to see output...</div>
                         <template v-else>{{ consoleContent }}</template>
@@ -81,7 +92,8 @@
         <div id="modal-overlay" class="modal-overlay" v-show="modal.show" @click="closeModal">
             <div class="modal card" @click.stop>
                 <div v-if="modal.html" v-html="modal.html"></div>
-                <component v-else-if="modal.component" :is="modal.component" v-bind="modal.props" @close="closeModal"></component>
+                <component v-else-if="modal.component" :is="modal.component" v-bind="modal.props" @close="closeModal">
+                </component>
             </div>
         </div>
     </div>
@@ -218,10 +230,10 @@
     <script src="/static/app.js"></script>
     <script>
         fetch('/static/templates.html').then(r => {
-            if(r.ok) return r.text();
+            if (r.ok) return r.text();
             return '';
         }).then(html => {
-            if(html) {
+            if (html) {
                 const div = document.createElement('div');
                 div.style.display = 'none';
                 div.innerHTML = html;
@@ -241,4 +253,5 @@
         });
     </script>
 </body>
+
 </html>

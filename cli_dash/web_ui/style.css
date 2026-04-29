@@ -567,36 +567,42 @@ button.warning:hover {
     position: relative;
     display: flex;
     align-items: center;
+    width: 100%;
 }
 
-#history-search, #schedule-search {
+.search-wrapper input {
     background: var(--bg-color);
     border: 1px solid var(--border-color);
     color: var(--text-primary);
-    padding: 4px 28px 4px 8px; /* Extra padding on right for ✕ */
-    border-radius: 6px;
-    font-size: 0.8rem;
-    width: 150px;
+    padding: 10px 36px 10px 14px; /* Extra padding on right for ✕ */
+    border-radius: 8px;
+    font-size: 0.95rem;
+    width: 100%;
+    transition: all 0.2s ease;
+}
+
+.search-wrapper input:focus {
+    border-color: var(--accent-color);
+    outline: none;
+    box-shadow: 0 0 0 2px rgba(88, 166, 255, 0.2);
 }
 
 .clear-btn {
     position: absolute;
-    right: 8px;
+    right: 12px;
     background: transparent;
     border: none;
     color: var(--text-secondary);
     cursor: pointer;
-    font-size: 0.8rem;
+    font-size: 1rem;
     padding: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .clear-btn:hover {
     color: var(--text-primary);
-}
-
-#history-search:focus, #schedule-search:focus {
-    border-color: var(--accent-color);
-    outline: none;
 }
 
 .active-job-wrapper {
@@ -781,11 +787,7 @@ button.warning:hover {
         justify-content: space-between;
     }
     
-    .search-wrapper {
-        width: 100%;
-    }
-    
-    #history-search, #schedule-search {
+    .search-wrapper input {
         width: 100%;
     }
     

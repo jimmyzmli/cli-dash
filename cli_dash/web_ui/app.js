@@ -1,10 +1,11 @@
 /* cli-dash Vue 3 app.js */
-const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
+;(function() {
+const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick, markRaw } = Vue;
 
 window.dashExtensions = { tabs: [], headerOptions: [], onInit: [] };
 
-function registerTab(tab) { window.dashExtensions.tabs.push(tab); }
-function registerHeaderOption(opt) { window.dashExtensions.headerOptions.push(opt); }
+window.registerTab = function(tab) { window.dashExtensions.tabs.push(tab); }
+window.registerHeaderOption = function(opt) { window.dashExtensions.headerOptions.push(opt); }
 
 // Define Vue app
 const App = {
@@ -241,7 +242,7 @@ const App = {
             // Build tabs
             const extTabs = window.dashExtensions.tabs.map(t => ({
                 ...t,
-                component: t.component || { template: '<div>No Vue component provided for tab ' + t.label + '</div>' }
+                component: t.component ? (typeof t.component === 'object' ? markRaw(t.component) : t.component) : { template: '<div>No Vue component provided for tab ' + t.label + '</div>' }
             }));
             
             // Find if rclone progress is registered as log component
@@ -494,3 +495,5 @@ window.initVueApp = function() {
     app.component('HistoryView', HistoryView);
     app.mount('#app');
 };
+
+})();
