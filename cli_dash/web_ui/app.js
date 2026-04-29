@@ -67,6 +67,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         link.className = 'tab-link';
         link.id = `tab-${tab.id}`;
         link.textContent = tab.label;
+        link.addEventListener('click', switchToMainView);
         tabBar.appendChild(link);
 
         const view = document.createElement('div');
@@ -328,6 +329,7 @@ async function showJob(job_id, label) {
         con.textContent = ld.content || (jobStatus === 'running' ? 'Initializing...' : 'No output captured.');
         con.scrollTop = con.scrollHeight;
         if (window.onJobLogUpdate) window.onJobLogUpdate(ld, con.textContent);
+        switchToMonitorView();
     } catch (e) { console.error('Error showing job:', e); }
 }
 
@@ -338,6 +340,7 @@ function closeConsole() {
     document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
     if (window.onConsoleClose) window.onConsoleClose();
     if (window.location.pathname !== '/') window.history.pushState(null, '', '/');
+    switchToMainView();
 }
 
 
@@ -513,3 +516,90 @@ async function checkStatus() {
 
 // Store config globally for runCommand flag logic
 (async () => { try { const r = await fetch('/static/config/app.json'); if (r.ok) window._appConfig = await r.json(); } catch (e) { } })();
+
+// --- Mobile Swipe Navigation ---
+function switchToMonitorView() {
+    if (window.innerWidth <= 768) {
+        document.querySelector('main').classList.add('show-monitor');
+    }
+}
+
+function switchToMainView() {
+    if (window.innerWidth <= 768) {
+        document.querySelector('main').classList.remove('show-monitor');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const main = document.querySelector('main');
+    let touchStartX = 0;
+    let touchStartY = 0;
+    let currentX = 0;
+    let isSwiping = false;
+    let swipeThreshold = 50; // min distance to trigger switch
+
+    main.addEventListener('touchstart', e => {
+        if (window.innerWidth > 768) return;
+        // Don't swipe if touching a horizontal scroll area (like console or tabs)
+        const target = e.target;
+        if (target.closest('.console') || target.closest('.tabs')) return;
+        
+        touchStartX = e.touches[0].clientX;
+        touchStartY = e.touches[0].clientY;
+        isSwiping = true;
+        main.classList.add('swiping');
+    }, { passive: true });
+
+    main.addEventListener('touchmove', e => {
+        if (!isSwiping || window.innerWidth > 768) return;
+        const x = e.touches[0].clientX;
+        const y = e.touches[0].clientY;
+        const dx = x - touchStartX;
+        const dy = y - touchStartY;
+        
+        // If scrolling vertically, cancel swipe
+        if (Math.abs(dy) > Math.abs(dx)) {
+            isSwiping = false;
+            main.classList.remove('swiping');
+            document.getElementById('tab-views').style.transform = '';
+            document.querySelector('.monitor').style.transform = '';
+            return;
+        }
+
+        currentX = x;
+        const isMonitor = main.classList.contains('show-monitor');
+        
+        // Calculate offset
+        let offset = dx;
+        if (isMonitor) {
+            offset = -main.clientWidth + dx;
+            if (offset > 0) offset = 0; // Don't swipe past left edge
+        } else {
+            if (offset < -main.clientWidth) offset = -main.clientWidth; // Don't swipe past right edge
+            if (offset > 0) offset = 0; // Don't swipe left from main view
+        }
+
+        document.getElementById('tab-views').style.transform = `translateX(${offset}px)`;
+        document.querySelector('.monitor').style.transform = `translateX(${offset}px)`;
+    }, { passive: true });
+
+    main.addEventListener('touchend', e => {
+        if (!isSwiping || window.innerWidth > 768) return;
+        isSwiping = false;
+        main.classList.remove('swiping');
+        
+        // Remove inline styles to let CSS transitions take over
+        document.getElementById('tab-views').style.transform = '';
+        document.querySelector('.monitor').style.transform = '';
+
+        const dx = currentX - touchStartX;
+        if (Math.abs(dx) > swipeThreshold) {
+            if (dx < 0 && !main.classList.contains('show-monitor')) {
+                switchToMonitorView();
+            } else if (dx > 0 && main.classList.contains('show-monitor')) {
+                switchToMainView();
+            }
+        }
+    });
+});
+

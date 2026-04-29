@@ -678,3 +678,153 @@ button.warning:hover {
 .custom-cmd-input button:hover {
     background: #478edb;
 }
+
+/* Mobile Responsiveness */
+@media (max-width: 768px) {
+    body {
+        overflow: hidden;
+    }
+    
+    .app-container {
+        padding: 10px;
+        height: 100vh;
+        overflow: hidden;
+    }
+    
+    header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+        padding-bottom: 10px;
+    }
+    
+    .header-actions {
+        width: 100%;
+        flex-wrap: wrap;
+        justify-content: flex-start;
+        gap: 10px;
+    }
+    
+    .tabs {
+        overflow-x: auto;
+        white-space: nowrap;
+        padding-bottom: 5px;
+        -webkit-overflow-scrolling: touch;
+    }
+    
+    main {
+        display: flex !important;
+        flex-direction: row;
+        width: 100%;
+        overflow-x: hidden;
+        overflow-y: hidden;
+        position: relative;
+        flex: 1;
+        margin-top: 10px;
+    }
+    
+    .resizer {
+        display: none !important;
+    }
+    
+    #tab-views {
+        min-width: 100%;
+        max-width: 100%;
+        height: 100%;
+        transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+        padding-right: 0;
+    }
+    
+    .monitor {
+        display: flex;
+        flex-direction: column;
+        min-width: 100%;
+        max-width: 100%;
+        height: 100%;
+        gap: 15px;
+        transition: transform 0.3s cubic-bezier(0.25, 0.8, 0.25, 1);
+    }
+    
+    main.show-monitor #tab-views {
+        transform: translateX(-100%);
+    }
+    
+    main.show-monitor .monitor {
+        transform: translateX(-100%);
+    }
+
+    main.swiping #tab-views, main.swiping .monitor {
+        transition: none;
+    }
+    
+    .console-card, .history-card {
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+    }
+    
+    .card-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    
+    .card-header h2 {
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    .card-header .header-actions {
+        flex-direction: row;
+        flex-wrap: wrap;
+        width: 100%;
+        justify-content: space-between;
+    }
+    
+    .search-wrapper {
+        width: 100%;
+    }
+    
+    #history-search, #schedule-search {
+        width: 100%;
+    }
+    
+    .job-info {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 5px;
+        width: 100%;
+    }
+    
+    .job-actions {
+        opacity: 1;
+        align-self: flex-end;
+    }
+    
+    .schedule-item {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 15px;
+    }
+    
+    .schedule-info {
+        width: 100%;
+    }
+    
+    .schedule-actions {
+        align-self: flex-end;
+    }
+    
+    .status-badge {
+        align-self: flex-start;
+        margin-top: 5px;
+    }
+
+    .custom-cmd-input {
+        flex-direction: column;
+    }
+
+    .custom-cmd-input button {
+        width: 100%;
+    }
+}
