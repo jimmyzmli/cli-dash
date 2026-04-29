@@ -1,6 +1,5 @@
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,85 +9,232 @@
     <link rel="stylesheet" href="/static/extensions.css" onerror="this.remove()">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap"
-        rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+    <style> [v-cloak] { display: none !important; } </style>
 </head>
-
 <body>
-    <div class="app-container">
+    <div id="app" class="app-container" v-cloak>
         <header>
             <div class="logo">
-                <span class="icon" id="app-icon">⚡</span>
-                <h1 id="app-title">Control Center</h1>
+                <span class="icon" id="app-icon">{{ appConfig.icon || '⚡' }}</span>
+                <h1 id="app-title">{{ appConfig.title || 'Control Center' }}</h1>
             </div>
             <div class="header-actions">
-                <div id="header-options"></div>
+                <div id="header-options">
+                    <div class="option-toggle" v-for="opt in allHeaderOptions" :key="opt.id" :id="opt.warn_off ? opt.id + '-option-container' : ''">
+                        <input type="checkbox" :id="opt.id + '-option'" v-model="headerState[opt.id]" @change="saveHeaderState(opt.id)">
+                        <label :for="opt.id + '-option'">{{ opt.label }}</label>
+                    </div>
+                </div>
                 <div class="status-indicator">
-                    <span id="server-status" class="status-dot"></span>
-                    <span id="status-text">Connected</span>
+                    <span id="server-status" class="status-dot" :style="{ backgroundColor: connected ? 'var(--success-color)' : 'var(--error-color)', boxShadow: connected ? '0 0 8px var(--success-color)' : '0 0 8px var(--error-color)' }"></span>
+                    <span id="status-text">{{ connected ? 'Connected' : 'Disconnected' }}</span>
                 </div>
             </div>
         </header>
 
         <nav class="tabs" id="tab-bar">
-            <!-- Tabs populated dynamically -->
+            <a v-for="tab in tabs" :key="tab.id"
+               :href="'#' + tab.label"
+               class="tab-link"
+               :class="{ active: currentTab === tab.id }"
+               @click="switchTab(tab)">
+                {{ tab.label }}
+            </a>
         </nav>
 
-        <main>
-            <div id="tab-views">
-                <!-- Tab views populated dynamically -->
+        <main :class="{ 'show-monitor': showMonitor, 'swiping': isSwiping }"
+              @touchstart="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd">
+            <div id="tab-views" :style="tabViewsStyle">
+                <div class="view" style="display: block">
+                    <component :is="activeTabComponent"></component>
+                </div>
             </div>
 
-            <div class="resizer" id="drag-resizer"></div>
+            <div class="resizer" id="drag-resizer" @mousedown="startResize"></div>
 
-            <section class="monitor" id="monitor-section">
+            <section class="monitor" id="monitor-section" :style="monitorStyle">
                 <div class="card console-card">
                     <div class="card-header">
                         <h2><span class="icon">💻</span> Live Console</h2>
                         <div class="active-job-wrapper">
-                            <div id="active-job-id" class="active-job-id">Ready</div>
-                            <button id="close-console" class="close-btn" style="display:none" onclick="closeConsole()" title="Close Console">✕</button>
+                            <div class="active-job-id">Viewing: {{ activeJobLabel }}</div>
+                            <button class="close-btn" v-if="activeJobId" @click="closeConsole" title="Close Console">✕</button>
                         </div>
                     </div>
-                    <div id="console" class="console">
-                        <div class="placeholder">Select a task to see output...</div>
+                    <!-- Rclone / custom progress hook -->
+                    <component v-if="logComponent" :is="logComponent" :job="activeJob" :log-content="consoleContent"></component>
+                    <div id="console" class="console" ref="consoleEl">
+                        <div v-if="!activeJobId" class="placeholder">Select a task to see output...</div>
+                        <template v-else>{{ consoleContent }}</template>
                     </div>
                 </div>
 
                 <div class="card history-card">
-                    <div class="card-header">
-                        <h2><span class="icon">📜</span> Job History</h2>
-                        <div class="header-actions">
-                            <div class="search-wrapper">
-                                <input type="text" id="history-search" placeholder="Search command..."
-                                    oninput="refreshHistory()">
-                                <button id="clear-search" class="clear-btn" onclick="clearSearch()"
-                                    style="display: none;">✕</button>
-                            </div>
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="show-cron" onchange="refreshHistory()"> Show Cron
-                            </label>
-                            <button class="icon-btn" onclick="resetFilters()" title="Reset Filters">↺</button>
-                        </div>
-                    </div>
-                    <div class="history-list" id="history-list">
-                        <!-- Jobs will be populated here -->
-                    </div>
+                    <history-view></history-view>
                 </div>
             </section>
         </main>
-    </div>
 
-    <!-- Modals container for extensions -->
-    <div id="modal-overlay" class="modal-overlay" style="display:none;" onclick="closeModals()">
-        <div class="modal card" onclick="event.stopPropagation()">
-            <div id="modal-content"></div>
+        <!-- Modals -->
+        <div id="modal-overlay" class="modal-overlay" v-show="modal.show" @click="closeModal">
+            <div class="modal card" @click.stop>
+                <div v-if="modal.html" v-html="modal.html"></div>
+                <component v-else-if="modal.component" :is="modal.component" v-bind="modal.props" @close="closeModal"></component>
+            </div>
         </div>
     </div>
 
-    <script src="/static/app.js"></script>
-    <script src="/static/extensions.js" onerror="this.remove()"></script>
-</body>
+    <!-- Core Templates -->
+    <script type="text/x-template" id="tpl-commands">
+        <div class="controls">
+            <div id="command-cards" style="display:contents">
+                <div class="card" v-for="cat in commandCategories" :key="cat.label || cat.title">
+                    <h2><span class="icon">{{ cat.icon }}</span> {{ cat.title || cat.label }}</h2>
+                    <template v-if="cat.commands">
+                        <div class="button-group">
+                            <button v-for="cmd in cat.commands" :key="cmd.command" :title="cmd.command" @click="runCommand(cmd.command, cmd.description || cmd.label)">
+                                {{ cmd.label }}
+                            </button>
+                        </div>
+                    </template>
+                    <template v-else-if="cat.command">
+                        <p v-if="cat.description" style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:15px">{{ cat.description }}</p>
+                        <button class="accent" @click="runCommand(cat.command, cat.label)">Run Command</button>
+                    </template>
+                </div>
+            </div>
+            <div class="card">
+                <h2><span class="icon">⌨️</span> Custom Command</h2>
+                <div class="custom-cmd-input">
+                    <input type="text" v-model="customCmd" @keypress.enter="runCustom" list="command-presets" placeholder="e.g. my-script.py --flag">
+                    <button @click="runCustom">Run</button>
+                    <datalist id="command-presets">
+                        <option v-for="opt in presets" :value="opt">{{ opt }}</option>
+                    </datalist>
+                </div>
+            </div>
+        </div>
+    </script>
 
+    <script type="text/x-template" id="tpl-scheduled">
+        <div class="controls">
+            <div class="card">
+                <div class="card-header" style="flex-direction:column;align-items:stretch;gap:10px; border:none; padding:0; margin-bottom: 15px;">
+                    <div style="display:flex;justify-content:space-between;align-items:center">
+                        <h2><span class="icon">📅</span> Cron Schedules</h2>
+                        <button class="icon-btn accent" @click="showNew = true" title="New Schedule">➕</button>
+                    </div>
+                    <div class="search-wrapper">
+                        <input type="text" v-model="searchQuery" placeholder="Search schedules..." style="width:100%">
+                        <button class="clear-btn" v-show="searchQuery" @click="searchQuery = ''" style="display:block">✕</button>
+                    </div>
+                </div>
+                <div class="card form-card" v-if="showNew" style="margin-bottom:20px">
+                    <h3>Add New Schedule</h3>
+                    <div class="form-group">
+                        <input type="text" v-model="newSched.label" placeholder="Label">
+                        <input type="text" v-model="newSched.command" placeholder="Command">
+                        <input type="text" v-model="newSched.cron_expr" placeholder="Cron (e.g. 0 10 * * *)">
+                    </div>
+                    <div class="form-actions">
+                        <button class="small-btn" @click="showNew = false">Cancel</button>
+                        <button class="small-btn accent" @click="saveNew">Save</button>
+                    </div>
+                </div>
+                <div class="schedule-list">
+                    <div v-for="s in filteredSchedules" :key="s.id" class="schedule-item" :class="{ disabled: !s.enabled }">
+                        <div class="catch-up-overlay" v-if="s.catch_up" title="Catch Up Enabled">⚡</div>
+                        <div class="schedule-info" @click="filterHistory(s.command)">
+                            <div class="schedule-label">
+                                <input v-if="editingId === s.id" type="text" v-model="editData.label" @keypress.enter="saveEdit(s.id)">
+                                <template v-else>{{ s.label }}</template>
+                            </div>
+                            <div class="schedule-subtitle" v-if="s.enabled && s.next_run_iso">Next run: {{ formatNextRun(s) }}</div>
+                            <div class="schedule-meta">
+                                <template v-if="editingId === s.id">
+                                    <input type="text" v-model="editData.cron_expr" @keypress.enter="saveEdit(s.id)" style="margin-bottom: 5px;">
+                                    <input type="text" v-model="editData.command" @keypress.enter="saveEdit(s.id)">
+                                </template>
+                                <template v-else>{{ s.cron_expr }} • {{ s.command }}</template>
+                            </div>
+                        </div>
+                        <div class="schedule-actions">
+                            <div class="kebab-menu">
+                                <button class="icon-btn">⋮</button>
+                                <div class="dropdown-content">
+                                    <div class="dropdown-item" @click="runSchedule(s)">Run Now</div>
+                                    <div class="dropdown-item" @click="editingId === s.id ? saveEdit(s.id) : startEdit(s)">{{ editingId === s.id ? 'Save' : 'Edit' }}</div>
+                                    <div class="dropdown-item" @click="toggleEnabled(s)">{{ s.enabled ? 'Deactivate' : 'Activate' }}</div>
+                                    <div class="dropdown-item" @click="toggleCatchUp(s)">{{ s.catch_up ? 'Disable Catch Up' : 'Enable Catch Up' }}</div>
+                                    <div class="dropdown-item warning" @click="deleteSchedule(s.id)">Delete</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </script>
+
+    <script type="text/x-template" id="tpl-history">
+        <div style="display:contents">
+            <div class="card-header">
+                <h2><span class="icon">📜</span> Job History</h2>
+                <div class="header-actions">
+                    <div class="search-wrapper">
+                        <input type="text" v-model="searchQuery" placeholder="Search command...">
+                        <button class="clear-btn" v-show="searchQuery" @click="searchQuery = ''" style="display:block">✕</button>
+                    </div>
+                    <label class="checkbox-label">
+                        <input type="checkbox" v-model="showCron"> Show Cron
+                    </label>
+                    <button class="icon-btn" @click="resetFilters" title="Reset Filters">↺</button>
+                </div>
+            </div>
+            <div class="history-list" style="overflow-y:auto; flex:1">
+                <div v-for="job in filteredJobs" :key="job.id" class="history-item" :class="{ 'cron-job': job.is_cron }" :title="job.command">
+                    <div class="job-info" @click="showJob(job)">
+                        <span class="job-time">{{ formatTime(job.created_at) }}</span>
+                        <span class="job-cmd">{{ job.command }}</span>
+                        <span v-if="job.is_cron" class="cron-badge">CRON</span>
+                        <span class="status-badge" :class="'status-' + job.status">{{ job.status }}</span>
+                    </div>
+                    <div class="job-actions">
+                        <button class="action-job-btn rerun-btn" @click.stop="runJobAgain(job)" title="Rerun">▶</button>
+                        <button class="action-job-btn delete-btn" @click.stop="deleteJob(job)" title="Delete">✕</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </script>
+
+    <!-- App script + extensions loader -->
+    <script src="/static/app.js"></script>
+    <script>
+        fetch('/static/templates.html').then(r => {
+            if(r.ok) return r.text();
+            return '';
+        }).then(html => {
+            if(html) {
+                const div = document.createElement('div');
+                div.style.display = 'none';
+                div.innerHTML = html;
+                document.body.appendChild(div);
+            }
+            const script = document.createElement('script');
+            script.src = '/static/extensions.js';
+            script.onerror = () => {
+                // Initialize Vue app even if extensions.js is missing
+                window.initVueApp();
+            };
+            script.onload = () => {
+                // Initialize Vue app after extensions.js is loaded
+                if (window.initVueApp) window.initVueApp();
+            };
+            document.body.appendChild(script);
+        });
+    </script>
+</body>
 </html>

@@ -1,605 +1,466 @@
-/* cli-dash core app.js — config-driven, extensible */
+/* cli-dash Vue 3 app.js */
+const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick } = Vue;
 
-let currentOffset = 0, activeJobId = null;
-
-// Extension registry — projects push to these before DOMContentLoaded
 window.dashExtensions = { tabs: [], headerOptions: [], onInit: [] };
 
-// --- Extension API ---
 function registerTab(tab) { window.dashExtensions.tabs.push(tab); }
 function registerHeaderOption(opt) { window.dashExtensions.headerOptions.push(opt); }
-function showModal(html) { document.getElementById('modal-content').innerHTML = html; document.getElementById('modal-overlay').style.display = 'flex'; }
-function closeModals() { document.getElementById('modal-overlay').style.display = 'none'; }
 
-// --- Init ---
-document.addEventListener('DOMContentLoaded', async () => {
-    // Load app config
-    let appConfig = {};
-    try {
-        const r = await fetch('/static/config/app.json');
-        if (r.ok) appConfig = await r.json();
-    } catch (e) { }
+// Define Vue app
+const App = {
+    setup() {
+        const appConfig = ref({});
+        const connected = ref(false);
+        const headerState = reactive({});
+        const allHeaderOptions = ref([]);
 
-    // Load server config (title)
-    try {
-        const r = await fetch('/api/config');
-        if (r.ok) { const d = await r.json(); if (d.title) document.title = d.title; }
-    } catch (e) { }
-
-    // Apply icon + title + favicon
-    if (appConfig.icon) document.getElementById('app-icon').textContent = appConfig.icon;
-    if (appConfig.title) document.getElementById('app-title').textContent = appConfig.title;
-    
-    const favicon = document.getElementById('favicon');
-    if (appConfig.favicon) {
-        favicon.href = appConfig.favicon;
-    } else if (appConfig.icon) {
-        favicon.href = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>${appConfig.icon}</text></svg>`;
-    }
-
-    // Build header options
-    const headerContainer = document.getElementById('header-options');
-    const options = (appConfig.header_options || []);
-    // Merge extension-registered options
-    options.push(...window.dashExtensions.headerOptions);
-    options.forEach(opt => {
-        const div = document.createElement('div');
-        div.className = 'option-toggle';
-        if (opt.warn_off) div.id = `${opt.id}-option-container`;
-        div.innerHTML = `<input type="checkbox" id="${opt.id}-option"><label for="${opt.id}-option">${opt.label}</label>`;
-        headerContainer.appendChild(div);
-        const cb = div.querySelector('input');
-        if (localStorage.getItem(opt.id) === 'true') cb.checked = true;
-        cb.addEventListener('change', () => localStorage.setItem(opt.id, cb.checked));
-    });
-
-    // Build tabs: extension tabs first, then Commands + Scheduled
-    const tabBar = document.getElementById('tab-bar');
-    const tabViews = document.getElementById('tab-views');
-    const allTabs = [...window.dashExtensions.tabs];
-    // Add built-in tabs
-    allTabs.push({ id: 'commands', label: 'Commands', html: buildCommandsHTML(), onActivate: loadCommands });
-    allTabs.push({ id: 'scheduled', label: 'Scheduled', html: buildScheduledHTML(), onActivate: refreshSchedules });
-
-    allTabs.forEach((tab, i) => {
-        const link = document.createElement('a');
-        link.href = `#${tab.label}`;
-        link.className = 'tab-link';
-        link.id = `tab-${tab.id}`;
-        link.textContent = tab.label;
-        link.addEventListener('click', switchToMainView);
-        tabBar.appendChild(link);
-
-        const view = document.createElement('div');
-        view.id = `view-${tab.id}`;
-        view.className = 'view';
-        view.style.display = 'none';
-        view.innerHTML = tab.html || '';
-        tabViews.appendChild(view);
-    });
-
-    // Run extension init hooks
-    window.dashExtensions.onInit.forEach(fn => fn());
-
-    // Route + SSE initialization
-    handleRoute();
-    refreshHistory();
-    refreshSchedules();
-    checkStatus();
-    
-    setupSSE();
-    
-    // Visibility-aware SSE
-    document.addEventListener('visibilitychange', () => {
-        if (document.hidden) {
-            if (window._sse) { window._sse.close(); window._sse = null; }
-        } else {
-            setupSSE();
-            refreshHistory();
-            refreshSchedules();
-            checkStatus();
-        }
-    });
-});
-
-function buildCommandsHTML() {
-    return `
-    <div class="controls">
-        <div id="command-cards" style="display:contents"></div>
-        <div class="card">
-            <h2><span class="icon">⌨️</span> Custom Command</h2>
-            <div class="custom-cmd-input">
-                <input type="text" id="custom-command" list="command-presets" placeholder="e.g. my-script.py --flag">
-                <button onclick="runCustomCommand()">Run</button>
-                <datalist id="command-presets"></datalist>
-            </div>
-        </div>
-    </div>`;
-}
-
-function buildScheduledHTML() {
-    return `
-    <div class="controls">
-        <div class="card">
-            <div class="card-header" style="flex-direction:column;align-items:stretch;gap:10px">
-                <div style="display:flex;justify-content:space-between;align-items:center">
-                    <h2><span class="icon">📅</span> Cron Schedules</h2>
-                    <button class="icon-btn accent" onclick="showNewScheduleForm()" title="New Schedule">➕</button>
-                </div>
-                <div class="search-wrapper">
-                    <input type="text" id="schedule-search" placeholder="Search schedules..." oninput="refreshSchedules()" style="width:100%">
-                    <button id="clear-schedule-search" class="clear-btn" onclick="clearScheduleSearch()" style="display:none">✕</button>
-                </div>
-            </div>
-            <div id="new-schedule-form" class="card form-card" style="display:none;margin-bottom:20px">
-                <h3>Add New Schedule</h3>
-                <div class="form-group">
-                    <input type="text" id="sched-label" placeholder="Label">
-                    <input type="text" id="sched-cmd" placeholder="Command">
-                    <input type="text" id="sched-cron" placeholder="Cron (e.g. 0 10 * * *)">
-                </div>
-                <div class="form-actions">
-                    <button class="small-btn" onclick="hideNewScheduleForm()">Cancel</button>
-                    <button class="small-btn accent" onclick="saveNewSchedule()">Save</button>
-                </div>
-            </div>
-            <div id="schedule-list" class="schedule-list"></div>
-        </div>
-    </div>`;
-}
-
-// --- Routing ---
-window.addEventListener('hashchange', handleHash);
-window.onpopstate = handleRoute;
-
-function handleHash() {
-    const hash = (window.location.hash || '').replace('#', '');
-    document.querySelectorAll('.tab-link').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
-
-    // Find matching tab
-    const allTabs = [...window.dashExtensions.tabs,
-    { id: 'commands', label: 'Commands', onActivate: loadCommands },
-    { id: 'scheduled', label: 'Scheduled', onActivate: refreshSchedules }];
-
-    let matched = allTabs.find(t => t.label === hash);
-    if (!matched) matched = allTabs[0]; // Default to first tab
-
-    const tabEl = document.getElementById(`tab-${matched.id}`);
-    const viewEl = document.getElementById(`view-${matched.id}`);
-    if (tabEl) tabEl.classList.add('active');
-    if (viewEl) viewEl.style.display = 'block';
-    if (matched.onActivate) matched.onActivate();
-}
-
-function handleRoute() {
-    const path = window.location.pathname;
-    if (path.startsWith('/job/')) {
-        const jobId = parseInt(path.split('/')[2]);
-        if (jobId && activeJobId !== jobId) { currentOffset = 0; showJob(jobId); }
-    }
-    handleHash();
-}
-
-function navigateTo(path) { window.history.pushState({}, '', path); handleRoute(); }
-
-// --- Commands ---
-async function loadCommands() {
-    try {
-        const r = await fetch('/static/config/commands.json');
-        const categories = await r.json();
-        const container = document.getElementById('command-cards');
-        const datalist = document.getElementById('command-presets');
-        if (!container) return;
-        container.innerHTML = '';
-        if (datalist) datalist.innerHTML = '';
-
-        categories.forEach(cat => {
-            const card = document.createElement('div');
-            card.className = 'card';
-            const title = document.createElement('h2');
-            title.innerHTML = `<span class="icon">${cat.icon}</span> ${cat.title || cat.label}`;
-            card.appendChild(title);
-
-            if (cat.commands) {
-                const bg = document.createElement('div');
-                bg.className = 'button-group';
-                cat.commands.forEach(cmd => {
-                    const btn = document.createElement('button');
-                    btn.textContent = cmd.label;
-                    btn.title = cmd.command;
-                    btn.onclick = () => runCommand(cmd.command, cmd.description || cmd.label);
-                    bg.appendChild(btn);
-                    if (datalist) { const o = document.createElement('option'); o.value = cmd.command; datalist.appendChild(o); }
-                });
-                card.appendChild(bg);
-            } else if (cat.command) {
-                if (cat.description) { const p = document.createElement('p'); p.style.cssText = 'font-size:0.8rem;color:var(--text-secondary);margin-bottom:15px'; p.textContent = cat.description; card.appendChild(p); }
-                const btn = document.createElement('button');
-                btn.className = 'accent';
-                btn.textContent = 'Run Command';
-                btn.onclick = () => runCommand(cat.command, cat.label);
-                card.appendChild(btn);
-                if (datalist) { const o = document.createElement('option'); o.value = cat.command; datalist.appendChild(o); }
-            }
-            container.appendChild(card);
+        const currentTab = ref('commands');
+        const tabs = ref([]);
+        
+        const showMonitor = ref(false);
+        const isSwiping = ref(false);
+        
+        const activeJobId = ref(null);
+        const activeJobLabel = ref('');
+        const activeJob = ref(null);
+        const consoleContent = ref('');
+        
+        const logComponent = ref(null);
+        
+        const modal = reactive({
+            show: false,
+            html: '',
+            component: null,
+            props: {}
         });
-    } catch (e) { console.error('Error loading commands:', e); }
-}
 
-// --- Run Command ---
-async function runCommand(command, label, isCron = 0) {
-    // Command prefixing is now handled server-side via WEB_UI_JOB_EXEC
+        // Touch handling
+        let touchStartX = 0, touchStartY = 0, currentX = 0, swiping = false;
 
-    // Apply header option flags
-    const appConfig = window._appConfig || {};
-    (appConfig.header_options || []).forEach(opt => {
-        const cb = document.getElementById(`${opt.id}-option`);
-        if (cb && cb.checked && opt.flag && !command.includes(` ${opt.flag}`) && !command.includes(` --${opt.id}`))
-            command += ` ${opt.flag}`;
-    });
+        const onTouchStart = (e) => {
+            if (window.innerWidth > 768) return;
+            const target = e.target;
+            if (target.closest('.console') || target.closest('.tabs')) return;
+            touchStartX = e.touches[0].clientX;
+            touchStartY = e.touches[0].clientY;
+            swiping = true;
+            isSwiping.value = true;
+        };
 
-    try {
-        const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron }) });
-        const data = await r.json();
-        if (data.job_id) { 
-            currentOffset = 0; 
-            // SSE will handle the log streaming and history refresh
-            showJob(data.job_id, label); 
-        }
-    } catch (e) { console.error('Error running command:', e); alert('Failed to start command'); }
-}
-
-function runCustomCommand() {
-    const input = document.getElementById('custom-command');
-    if (!input || !input.value.trim()) return;
-    runCommand(input.value.trim(), 'Custom Command');
-    input.value = '';
-}
-
-// Enter key for custom command
-document.addEventListener('DOMContentLoaded', () => {
-    setTimeout(() => {
-        const ci = document.getElementById('custom-command');
-        if (ci) ci.addEventListener('keypress', e => { if (e.key === 'Enter') runCustomCommand(); });
-    }, 100);
-});
-
-// --- Unified SSE ---
-function setupSSE() {
-    if (window._sse) window._sse.close();
-    const sse = new EventSource('/api/events');
-    window._sse = sse;
-
-    sse.addEventListener('jobs', (e) => { 
-        refreshHistory(); 
-    });
-    sse.addEventListener('schedules', (e) => { 
-        refreshSchedules(); 
-    });
-    sse.addEventListener('log', (e) => {
-        const data = JSON.parse(e.data);
-        if (activeJobId === data.job_id) {
-            const con = document.getElementById('console');
-            if (con) {
-                // If this is the first log line and we have a placeholder, clear it
-                if (con.querySelector('.placeholder') || con.querySelector('.running-indicator')) con.textContent = '';
-                
-                const atBottom = con.scrollHeight - con.scrollTop <= con.clientHeight + 50;
-                con.textContent += data.content;
-                if (atBottom) con.scrollTop = con.scrollHeight;
-                
-                if (window.onJobLogUpdate) window.onJobLogUpdate(data, con.textContent);
+        const onTouchMove = (e) => {
+            if (!swiping || window.innerWidth > 768) return;
+            const x = e.touches[0].clientX;
+            const y = e.touches[0].clientY;
+            const dx = x - touchStartX;
+            const dy = y - touchStartY;
+            
+            if (Math.abs(dy) > Math.abs(dx)) {
+                swiping = false;
+                isSwiping.value = false;
+                return;
             }
-        }
-    });
+            currentX = x;
+            let offset = dx;
+            if (showMonitor.value) {
+                offset = -window.innerWidth + dx;
+                if (offset > 0) offset = 0;
+            } else {
+                if (offset < -window.innerWidth) offset = -window.innerWidth;
+                if (offset > 0) offset = 0;
+            }
+            document.getElementById('tab-views').style.transform = `translateX(${offset}px)`;
+            document.getElementById('monitor-section').style.transform = `translateX(${offset}px)`;
+        };
 
-    sse.onopen = () => {
-        console.log('SSE connection opened');
-        document.getElementById('server-status').style.backgroundColor = 'var(--success-color)';
-        document.getElementById('server-status').style.boxShadow = '0 0 8px var(--success-color)';
-        document.getElementById('status-text').textContent = 'Connected';
-    };
+        const onTouchEnd = (e) => {
+            if (!swiping || window.innerWidth > 768) return;
+            swiping = false;
+            isSwiping.value = false;
+            document.getElementById('tab-views').style.transform = '';
+            document.getElementById('monitor-section').style.transform = '';
 
-    sse.addEventListener('connected', () => {});
-    sse.addEventListener('ping', () => {});
+            const dx = currentX - touchStartX;
+            if (Math.abs(dx) > 50) {
+                if (dx < 0 && !showMonitor.value) showMonitor.value = true;
+                else if (dx > 0 && showMonitor.value) showMonitor.value = false;
+            }
+        };
 
-    sse.onerror = () => {
-        console.warn('SSE connection lost. Retrying in 5s...');
-        document.getElementById('server-status').style.backgroundColor = 'var(--error-color)';
-        document.getElementById('server-status').style.boxShadow = '0 0 8px var(--error-color)';
-        document.getElementById('status-text').textContent = 'Disconnected';
-        sse.close();
-        setTimeout(setupSSE, 5000);
-    };
-}
+        const startResize = (e) => {
+            if (window.innerWidth <= 768) return;
+            e.preventDefault();
+            const startX = e.clientX;
+            const main = document.querySelector('main');
+            const startWidth = document.getElementById('tab-views').getBoundingClientRect().width;
+            const totalWidth = main.getBoundingClientRect().width;
 
-async function showJob(job_id, label) {
-    if (window.location.pathname !== `/job/${job_id}`) window.history.pushState({}, '', `/job/${job_id}`);
-    activeJobId = job_id;
-    document.getElementById('active-job-id').textContent = `Viewing: ${label || `#${job_id}`}`;
-    document.getElementById('close-console').style.display = 'block';
-    const con = document.getElementById('console');
-    con.textContent = 'Loading output...';
-    currentOffset = 0;
-    try {
-        const lr = await fetch(`/api/job/${job_id}/log?offset=0`);
-        const ld = await lr.json();
-        const jobStatus = ld.job_status || 'unknown';
-        con.textContent = ld.content || (jobStatus === 'running' ? 'Initializing...' : 'No output captured.');
-        con.scrollTop = con.scrollHeight;
-        if (window.onJobLogUpdate) window.onJobLogUpdate(ld, con.textContent);
-        switchToMonitorView();
-    } catch (e) { console.error('Error showing job:', e); }
-}
+            const onMouseMove = (moveEvent) => {
+                const newWidth = startWidth + (moveEvent.clientX - startX);
+                const percent = (newWidth / totalWidth) * 100;
+                if (percent > 20 && percent < 80) {
+                    main.style.gridTemplateColumns = `${percent}% 0px 1fr`;
+                }
+            };
 
-function closeConsole() {
-    activeJobId = null;
-    document.getElementById('active-job-id').textContent = 'Ready';
-    document.getElementById('close-console').style.display = 'none';
-    document.getElementById('console').innerHTML = '<div class="placeholder">Select a task to see output...</div>';
-    if (window.onConsoleClose) window.onConsoleClose();
-    if (window.location.pathname !== '/') window.history.pushState(null, '', '/');
-    switchToMainView();
-}
+            const onMouseUp = () => {
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+                document.body.style.cursor = 'default';
+                document.getElementById('drag-resizer').classList.remove('dragging');
+            };
 
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+            document.body.style.cursor = 'col-resize';
+            document.getElementById('drag-resizer').classList.add('dragging');
+        };
 
-// --- History ---
-async function refreshHistory() {
-    try {
-        const r = await fetch('/api/jobs');
-        const jobs = await r.json();
-        renderHistory(jobs);
-    } catch (e) { console.error('Error refreshing history:', e); }
-}
+        // Modals
+        const closeModal = () => { modal.show = false; modal.html = ''; modal.component = null; modal.props = {}; };
+        window.showModalHtml = (html) => { modal.html = html; modal.component = null; modal.show = true; };
+        window.showModalComponent = (comp, props) => { modal.component = comp; modal.props = props; modal.html = ''; modal.show = true; };
+        window.closeModals = closeModal;
 
-function renderHistory(jobs) {
-    const showCronEl = document.getElementById('show-cron');
-    const showCron = showCronEl ? showCronEl.checked : true;
-    const searchInput = document.getElementById('history-search');
-    const q = searchInput ? searchInput.value.toLowerCase().trim() : '';
-    const clearBtn = document.getElementById('clear-search');
-    if (clearBtn) clearBtn.style.display = q ? 'block' : 'none';
+        // Routing
+        const handleHash = () => {
+            const hash = (window.location.hash || '').replace('#', '');
+            const matched = tabs.value.find(t => t.label === hash) || tabs.value[0];
+            if (matched) currentTab.value = matched.id;
+        };
+        const handleRoute = () => {
+            const path = window.location.pathname;
+            if (path.startsWith('/job/')) {
+                const jobId = parseInt(path.split('/')[2]);
+                if (jobId && activeJobId.value !== jobId) {
+                    showJob({ id: jobId, command: 'Job #' + jobId });
+                }
+            }
+            handleHash();
+        };
+        window.addEventListener('hashchange', handleHash);
+        window.onpopstate = handleRoute;
 
-    const filtered = jobs.filter(j => (showCron || !j.is_cron) && (!q || j.command.toLowerCase().includes(q)));
-    const hl = document.getElementById('history-list');
-    if (!hl) return;
-    hl.innerHTML = '';
+        const switchTab = (tab) => {
+            currentTab.value = tab.id;
+            if (window.innerWidth <= 768) showMonitor.value = false;
+        };
 
-    filtered.forEach(job => {
-        const item = document.createElement('div');
-        item.className = 'history-item';
-        if (job.is_cron) item.classList.add('cron-job');
-        item.title = job.command;
-        item.onclick = () => { currentOffset = 0; showJob(job.id, job.command); };
-        const d = new Date(job.created_at + 'Z');
-        const timeStr = d.toLocaleTimeString();
-        const dateStr = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
-        let cmdDisplay = job.command;
-        const cronTag = job.is_cron ? '<span class="cron-badge">CRON</span>' : '';
-        const runCmdEsc = job.command.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-        item.innerHTML = `
-                <div class="job-info" onclick="showJob(${job.id})">
-                    <span class="job-time">${dateStr} ${timeStr}</span>
-                    <span class="job-cmd">${cmdDisplay}</span>${cronTag}
-                    <span class="status-badge status-${job.status}">${job.status}</span>
-                </div>
-                <div class="job-actions">
-                    <button class="action-job-btn rerun-btn" onclick="runCommand('${runCmdEsc}','Rerun',${job.is_cron ? 1 : 0});event.stopPropagation()" title="Rerun">▶</button>
-                    <button class="action-job-btn delete-btn" onclick="deleteJob(${job.id},'${job.status}');event.stopPropagation()" title="Delete">✕</button>
-                </div>`;
-        hl.appendChild(item);
-    });
-}
+        const activeTabComponent = computed(() => {
+            const tab = tabs.value.find(t => t.id === currentTab.value);
+            return tab ? tab.component : null;
+        });
 
-async function deleteJob(id, status) {
-    let msg = 'Delete logs for this job?';
-    if (status === 'running') {
-        msg = 'Warning: This job is still running. Terminating it now may lead to data loss. Kill process and delete logs?';
-    } else if (status === 'pending') {
-        msg = 'Delete this pending job?';
+        // SSE
+        const setupSSE = () => {
+            if (window._sse) window._sse.close();
+            const sse = new EventSource('/api/events');
+            window._sse = sse;
+            
+            sse.addEventListener('jobs', () => { window.dispatchEvent(new Event('refresh-history')); });
+            sse.addEventListener('schedules', () => { window.dispatchEvent(new Event('refresh-schedules')); });
+            sse.addEventListener('log', (e) => {
+                const data = JSON.parse(e.data);
+                if (activeJobId.value === data.job_id) {
+                    const con = document.getElementById('console');
+                    if (con) {
+                        const atBottom = con.scrollHeight - con.scrollTop <= con.clientHeight + 50;
+                        consoleContent.value += data.content;
+                        if (atBottom) {
+                            nextTick(() => { con.scrollTop = con.scrollHeight; });
+                        }
+                    }
+                }
+            });
+            sse.onopen = () => { connected.value = true; };
+            sse.onerror = () => {
+                connected.value = false;
+                sse.close();
+                setTimeout(setupSSE, 5000);
+            };
+        };
+
+        const showJob = async (job) => {
+            if (window.location.pathname !== `/job/${job.id}`) window.history.pushState({}, '', `/job/${job.id}`);
+            activeJobId.value = job.id;
+            activeJobLabel.value = job.command;
+            activeJob.value = job;
+            consoleContent.value = 'Loading output...';
+            if (window.innerWidth <= 768) showMonitor.value = true;
+            
+            try {
+                const r = await fetch(`/api/job/${job.id}/log?offset=0`);
+                const ld = await r.json();
+                consoleContent.value = ld.content || (ld.job_status === 'running' ? 'Initializing...' : 'No output captured.');
+                nextTick(() => {
+                    const con = document.getElementById('console');
+                    if(con) con.scrollTop = con.scrollHeight;
+                });
+            } catch (e) { console.error('Error showing job:', e); }
+        };
+
+        const closeConsole = () => {
+            activeJobId.value = null;
+            activeJobLabel.value = '';
+            activeJob.value = null;
+            consoleContent.value = '';
+            if (window.location.pathname !== '/') window.history.pushState(null, '', '/');
+            if (window.innerWidth <= 768) showMonitor.value = false;
+        };
+
+        window.runCommand = async (command, label, isCron = 0, jobType = 'command') => {
+            appConfig.value.header_options?.forEach(opt => {
+                if (headerState[opt.id] && opt.flag && !command.includes(` ${opt.flag}`) && !command.includes(` --${opt.id}`))
+                    command += ` ${opt.flag}`;
+            });
+            try {
+                const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron, job_type: jobType }) });
+                const data = await r.json();
+                if (data.job_id) showJob({ id: data.job_id, command: label || command, job_type: jobType });
+            } catch (e) { alert('Failed to start command'); }
+        };
+        
+        window.showJobGlobal = showJob;
+
+        const saveHeaderState = (id) => {
+            localStorage.setItem(id, headerState[id]);
+        };
+
+        onMounted(async () => {
+            // Load app config
+            try { const r = await fetch('/static/config/app.json'); if (r.ok) appConfig.value = await r.json(); } catch(e){}
+            try { const r = await fetch('/api/config'); if (r.ok) { const d = await r.json(); if(d.title) document.title = d.title; } } catch(e){}
+            
+            // Apply header options
+            const opts = appConfig.value.header_options || [];
+            opts.push(...window.dashExtensions.headerOptions);
+            allHeaderOptions.value = opts;
+            opts.forEach(opt => {
+                headerState[opt.id] = localStorage.getItem(opt.id) === 'true';
+            });
+            
+            // Build tabs
+            const extTabs = window.dashExtensions.tabs.map(t => ({
+                ...t,
+                component: t.component || { template: '<div>No Vue component provided for tab ' + t.label + '</div>' }
+            }));
+            
+            // Find if rclone progress is registered as log component
+            if (window.dashExtensions.logComponent) {
+                logComponent.value = window.dashExtensions.logComponent;
+            }
+            
+            tabs.value = [
+                ...extTabs,
+                { id: 'commands', label: 'Commands', component: 'CommandsView' },
+                { id: 'scheduled', label: 'Scheduled', component: 'ScheduledView' }
+            ];
+
+            window.dashExtensions.onInit.forEach(fn => fn());
+
+            handleRoute();
+            setupSSE();
+            
+            document.addEventListener('visibilitychange', () => {
+                if (document.hidden) {
+                    if (window._sse) { window._sse.close(); window._sse = null; }
+                } else {
+                    setupSSE();
+                    window.dispatchEvent(new Event('refresh-history'));
+                    window.dispatchEvent(new Event('refresh-schedules'));
+                }
+            });
+        });
+
+        return {
+            appConfig, connected, headerState, allHeaderOptions, saveHeaderState,
+            tabs, currentTab, switchTab, activeTabComponent,
+            showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
+            activeJobId, activeJobLabel, activeJob, consoleContent, closeConsole,
+            modal, closeModal, logComponent
+        };
     }
+};
 
-    if (!confirm(msg)) return;
-    try {
-        await fetch(`/api/job/${id}`, { method: 'DELETE' });
-        if (activeJobId === id) closeConsole();
-        refreshHistory();
-    } catch (e) { console.error('Error deleting job:', e); }
-}
+// Global Components
+const CommandsView = {
+    template: '#tpl-commands',
+    setup() {
+        const commandCategories = ref([]);
+        const customCmd = ref('');
+        const presets = ref([]);
+        
+        onMounted(async () => {
+            try {
+                const r = await fetch('/static/config/commands.json');
+                commandCategories.value = await r.json();
+                presets.value = [];
+                commandCategories.value.forEach(cat => {
+                    if(cat.commands) cat.commands.forEach(c => presets.value.push(c.command));
+                    else if(cat.command) presets.value.push(cat.command);
+                });
+            } catch (e) {}
+        });
+        
+        const runCustom = () => {
+            if(customCmd.value.trim()) {
+                window.runCommand(customCmd.value.trim(), 'Custom Command');
+                customCmd.value = '';
+            }
+        };
 
-function clearSearch() { const s = document.getElementById('history-search'); if (s) s.value = ''; refreshHistory(); }
-function resetFilters() { clearSearch(); const sc = document.getElementById('show-cron'); if (sc) sc.checked = false; refreshHistory(); }
-function filterHistoryByCron(cmd) { const sc = document.getElementById('show-cron'); if (sc) sc.checked = true; const s = document.getElementById('history-search'); if (s) s.value = cmd; refreshHistory(); }
-
-// --- Schedules ---
-let editingScheduleId = null;
-
-async function refreshSchedules() {
-    try {
-        const r = await fetch('/api/schedules');
-        const schedules = await r.json();
-        renderSchedules(schedules);
-    } catch (e) { console.error('Error refreshing schedules:', e); }
-}
-
-function renderSchedules(schedules) {
-    const si = document.getElementById('schedule-search');
-    if (si) {
-        const q = si.value.toLowerCase().trim();
-        const cb = document.getElementById('clear-schedule-search');
-        if (cb) cb.style.display = q ? 'block' : 'none';
-        if (q) schedules = schedules.filter(s => s.label.toLowerCase().includes(q) || s.command.toLowerCase().includes(q));
+        return { commandCategories, customCmd, presets, runCustom, runCommand: window.runCommand };
     }
-    const list = document.getElementById('schedule-list');
-    if (!list) return;
-    list.innerHTML = '';
-    schedules.forEach(s => {
-        const item = document.createElement('div');
-        item.className = 'schedule-item';
-        if (!s.enabled) item.classList.add('disabled');
-        const isEdit = editingScheduleId === s.id;
-        const dc = s.command;
-        let nrs = '';
-        if (s.enabled && s.next_run_iso) {
+};
+
+const ScheduledView = {
+    template: '#tpl-scheduled',
+    setup() {
+        const schedules = ref([]);
+        const searchQuery = ref('');
+        const showNew = ref(false);
+        const newSched = reactive({ label: '', command: '', cron_expr: '' });
+        const editingId = ref(null);
+        const editData = reactive({ label: '', command: '', cron_expr: '' });
+
+        const fetchSchedules = async () => {
+            try {
+                const r = await fetch('/api/schedules');
+                schedules.value = await r.json();
+            } catch (e) {}
+        };
+
+        onMounted(() => {
+            fetchSchedules();
+            window.addEventListener('refresh-schedules', fetchSchedules);
+        });
+
+        onUnmounted(() => {
+            window.removeEventListener('refresh-schedules', fetchSchedules);
+        });
+
+        const filteredSchedules = computed(() => {
+            const q = searchQuery.value.toLowerCase().trim();
+            if (!q) return schedules.value;
+            return schedules.value.filter(s => s.label.toLowerCase().includes(q) || s.command.toLowerCase().includes(q));
+        });
+
+        const saveNew = async () => {
+            if(!newSched.label || !newSched.command || !newSched.cron_expr) { alert('All fields required'); return; }
+            await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newSched) });
+            showNew.value = false;
+            newSched.label = ''; newSched.command = ''; newSched.cron_expr = '';
+            fetchSchedules();
+        };
+
+        const startEdit = (s) => {
+            editingId.value = s.id;
+            editData.label = s.label;
+            editData.command = s.command;
+            editData.cron_expr = s.cron_expr;
+        };
+
+        const saveEdit = async (id) => {
+            if(!editData.label || !editData.command || !editData.cron_expr) return;
+            await fetch(`/api/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editData) });
+            editingId.value = null;
+            fetchSchedules();
+        };
+
+        const deleteSchedule = async (id) => {
+            if(!confirm('Delete this schedule?')) return;
+            await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+            fetchSchedules();
+        };
+        const toggleEnabled = async (s) => { await fetch(`/api/schedules/${s.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !s.enabled }) }); fetchSchedules(); };
+        const toggleCatchUp = async (s) => { await fetch(`/api/schedules/${s.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ catch_up: !s.catch_up }) }); fetchSchedules(); };
+        
+        const formatNextRun = (s) => {
             const nd = new Date(s.next_run_iso);
             const ts = nd.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
             const dm = s.minutes_until;
             let rs = dm === 0 ? 'due now' : dm < 60 ? `in ${dm}m` : dm < 1440 ? `in ${Math.floor(dm / 60)}h ${dm % 60}m` : `in ${Math.floor(dm / 1440)}d`;
-            nrs = `<div class="schedule-subtitle">Next run: ${ts} (${rs})</div>`;
-        }
-        item.innerHTML = `
-                ${s.catch_up ? '<div class="catch-up-overlay" title="Catch Up Enabled">⚡</div>' : ''}
-                <div class="schedule-info" onclick="filterHistoryByCron('${dc}')">
-                    <div class="schedule-label">${isEdit ? `<input type="text" id="edit-label-${s.id}" value="${s.label}" onkeypress="handleEditKP(event,${s.id})">` : s.label}</div>
-                    ${nrs}
-                    <div class="schedule-meta">${isEdit ? `<input type="text" id="edit-cron-${s.id}" value="${s.cron_expr}" onkeypress="handleEditKP(event,${s.id})"><input type="text" id="edit-cmd-${s.id}" value="${dc}" onkeypress="handleEditKP(event,${s.id})">` : `${s.cron_expr} • ${dc}`}</div>
-                </div>
-                <div class="schedule-actions"><div class="kebab-menu"><button class="icon-btn">⋮</button><div class="dropdown-content">
-                    <div class="dropdown-item" onclick="runCommand('${s.command}','${s.label}',1)">Run Now</div>
-                    <div class="dropdown-item" onclick="${isEdit ? `saveSchedule(${s.id})` : `startEditSchedule(${s.id})`}">${isEdit ? 'Save' : 'Edit'}</div>
-                    <div class="dropdown-item" onclick="toggleSchedule(${s.id},${s.enabled})">${s.enabled ? 'Deactivate' : 'Activate'}</div>
-                    <div class="dropdown-item" onclick="toggleCatchUp(${s.id},${s.catch_up || 0})">${s.catch_up ? 'Disable Catch Up' : 'Enable Catch Up'}</div>
-                    <div class="dropdown-item warning" onclick="deleteSchedule(${s.id})">Delete</div>
-                </div></div></div>`;
-        list.appendChild(item);
-    });
-}
+            return `${ts} (${rs})`;
+        };
 
-function startEditSchedule(id) { editingScheduleId = id; refreshSchedules(); }
-async function saveSchedule(id) {
-    const l = document.getElementById(`edit-label-${id}`).value.trim();
-    const c = document.getElementById(`edit-cron-${id}`).value.trim();
-    const cmd = document.getElementById(`edit-cmd-${id}`).value.trim();
-    if (!l || !c || !cmd) return;
-    await fetch(`/api/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: l, cron_expr: c, command: cmd }) });
-    editingScheduleId = null;
-    refreshSchedules();
-}
-function handleEditKP(e, id) { if (e.key === 'Enter') saveSchedule(id); }
-function showNewScheduleForm() { document.getElementById('new-schedule-form').style.display = 'block'; }
-function hideNewScheduleForm() { document.getElementById('new-schedule-form').style.display = 'none'; }
-async function saveNewSchedule() {
-    const l = document.getElementById('sched-label').value.trim();
-    const cmd = document.getElementById('sched-cmd').value.trim();
-    const c = document.getElementById('sched-cron').value.trim();
-    if (!l || !cmd || !c) { alert('All fields are required'); return; }
-    await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label: l, command: cmd, cron_expr: c }) });
-    hideNewScheduleForm();
-    refreshSchedules();
-}
-function clearScheduleSearch() { const s = document.getElementById('schedule-search'); if (s) { s.value = ''; refreshSchedules(); } }
-async function toggleSchedule(id, cur) { await fetch(`/api/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !cur }) }); refreshSchedules(); }
-async function toggleCatchUp(id, cur) { await fetch(`/api/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ catch_up: !cur }) }); refreshSchedules(); }
-async function deleteSchedule(id) { if (!confirm('Delete this schedule?')) return; await fetch(`/api/schedules/${id}`, { method: 'DELETE' }); refreshSchedules(); }
+        const runSchedule = (s) => window.runCommand(s.command, s.label, 1);
+        const filterHistory = (cmd) => {
+            window.dispatchEvent(new CustomEvent('filter-history', { detail: cmd }));
+        };
 
-// --- Resizer ---
-document.addEventListener('DOMContentLoaded', () => {
-    const resizer = document.getElementById('drag-resizer');
-    const main = document.querySelector('main');
-    if (!resizer || !main) return;
-    let dragging = false;
-    resizer.addEventListener('mousedown', () => { dragging = true; resizer.classList.add('dragging'); document.body.style.cursor = 'col-resize'; });
-    document.addEventListener('mousemove', e => {
-        if (!dragging) return;
-        const pct = ((e.clientX - main.getBoundingClientRect().left) / main.clientWidth) * 100;
-        if (pct > 10 && pct < 90) main.style.gridTemplateColumns = `${pct}% 0px 1fr`;
-    });
-    document.addEventListener('mouseup', () => { if (dragging) { dragging = false; resizer.classList.remove('dragging'); document.body.style.cursor = 'default'; } });
-});
-
-// --- Server status ---
-async function checkStatus() {
-    try { await fetch('/api/jobs'); document.getElementById('server-status').style.backgroundColor = 'var(--success-color)'; document.getElementById('server-status').style.boxShadow = '0 0 8px var(--success-color)'; document.getElementById('status-text').textContent = 'Connected'; }
-    catch (e) { document.getElementById('server-status').style.backgroundColor = 'var(--error-color)'; document.getElementById('server-status').style.boxShadow = '0 0 8px var(--error-color)'; document.getElementById('status-text').textContent = 'Disconnected'; }
-}
-
-// Store config globally for runCommand flag logic
-(async () => { try { const r = await fetch('/static/config/app.json'); if (r.ok) window._appConfig = await r.json(); } catch (e) { } })();
-
-// --- Mobile Swipe Navigation ---
-function switchToMonitorView() {
-    if (window.innerWidth <= 768) {
-        document.querySelector('main').classList.add('show-monitor');
+        return {
+            schedules, searchQuery, filteredSchedules, showNew, newSched, saveNew,
+            editingId, editData, startEdit, saveEdit, deleteSchedule, toggleEnabled, toggleCatchUp, formatNextRun,
+            runSchedule, filterHistory
+        };
     }
-}
+};
 
-function switchToMainView() {
-    if (window.innerWidth <= 768) {
-        document.querySelector('main').classList.remove('show-monitor');
+const HistoryView = {
+    template: '#tpl-history',
+    setup() {
+        const jobs = ref([]);
+        const searchQuery = ref('');
+        const showCron = ref(true);
+
+        const fetchJobs = async () => {
+            try {
+                const r = await fetch('/api/jobs');
+                jobs.value = await r.json();
+            } catch (e) {}
+        };
+
+        const handleFilter = (e) => {
+            showCron.value = true;
+            searchQuery.value = e.detail;
+            document.getElementById('tab-views').scrollTop = 0;
+        };
+
+        onMounted(() => {
+            fetchJobs();
+            window.addEventListener('refresh-history', fetchJobs);
+            window.addEventListener('filter-history', handleFilter);
+        });
+
+        onUnmounted(() => {
+            window.removeEventListener('refresh-history', fetchJobs);
+            window.removeEventListener('filter-history', handleFilter);
+        });
+
+        const filteredJobs = computed(() => {
+            const q = searchQuery.value.toLowerCase().trim();
+            return jobs.value.filter(j => (showCron.value || !j.is_cron) && (!q || j.command.toLowerCase().includes(q)));
+        });
+
+        const resetFilters = () => { searchQuery.value = ''; showCron.value = false; };
+        
+        const deleteJob = async (job) => {
+            let msg = 'Delete logs for this job?';
+            if(job.status === 'running') msg = 'Warning: This job is still running. Terminating it now may lead to data loss. Kill process and delete logs?';
+            else if(job.status === 'pending') msg = 'Delete this pending job?';
+            if(!confirm(msg)) return;
+            await fetch(`/api/job/${job.id}`, { method: 'DELETE' });
+            fetchJobs();
+        };
+
+        const runJobAgain = (job) => {
+            const runCmdEsc = job.command.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+            window.runCommand(job.command, 'Rerun', job.is_cron ? 1 : 0, job.job_type);
+        };
+
+        const formatTime = (ts) => {
+            const d = new Date(ts + 'Z');
+            return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString();
+        };
+
+        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, showJob: window.showJobGlobal };
     }
-}
+};
 
-document.addEventListener('DOMContentLoaded', () => {
-    const main = document.querySelector('main');
-    let touchStartX = 0;
-    let touchStartY = 0;
-    let currentX = 0;
-    let isSwiping = false;
-    let swipeThreshold = 50; // min distance to trigger switch
-
-    main.addEventListener('touchstart', e => {
-        if (window.innerWidth > 768) return;
-        // Don't swipe if touching a horizontal scroll area (like console or tabs)
-        const target = e.target;
-        if (target.closest('.console') || target.closest('.tabs')) return;
-        
-        touchStartX = e.touches[0].clientX;
-        touchStartY = e.touches[0].clientY;
-        isSwiping = true;
-        main.classList.add('swiping');
-    }, { passive: true });
-
-    main.addEventListener('touchmove', e => {
-        if (!isSwiping || window.innerWidth > 768) return;
-        const x = e.touches[0].clientX;
-        const y = e.touches[0].clientY;
-        const dx = x - touchStartX;
-        const dy = y - touchStartY;
-        
-        // If scrolling vertically, cancel swipe
-        if (Math.abs(dy) > Math.abs(dx)) {
-            isSwiping = false;
-            main.classList.remove('swiping');
-            document.getElementById('tab-views').style.transform = '';
-            document.querySelector('.monitor').style.transform = '';
-            return;
-        }
-
-        currentX = x;
-        const isMonitor = main.classList.contains('show-monitor');
-        
-        // Calculate offset
-        let offset = dx;
-        if (isMonitor) {
-            offset = -main.clientWidth + dx;
-            if (offset > 0) offset = 0; // Don't swipe past left edge
-        } else {
-            if (offset < -main.clientWidth) offset = -main.clientWidth; // Don't swipe past right edge
-            if (offset > 0) offset = 0; // Don't swipe left from main view
-        }
-
-        document.getElementById('tab-views').style.transform = `translateX(${offset}px)`;
-        document.querySelector('.monitor').style.transform = `translateX(${offset}px)`;
-    }, { passive: true });
-
-    main.addEventListener('touchend', e => {
-        if (!isSwiping || window.innerWidth > 768) return;
-        isSwiping = false;
-        main.classList.remove('swiping');
-        
-        // Remove inline styles to let CSS transitions take over
-        document.getElementById('tab-views').style.transform = '';
-        document.querySelector('.monitor').style.transform = '';
-
-        const dx = currentX - touchStartX;
-        if (Math.abs(dx) > swipeThreshold) {
-            if (dx < 0 && !main.classList.contains('show-monitor')) {
-                switchToMonitorView();
-            } else if (dx > 0 && main.classList.contains('show-monitor')) {
-                switchToMainView();
-            }
-        }
-    });
-});
-
+// Initialize app when called
+window.initVueApp = function() {
+    const app = createApp(App);
+    app.component('CommandsView', CommandsView);
+    app.component('ScheduledView', ScheduledView);
+    app.component('HistoryView', HistoryView);
+    app.mount('#app');
+};

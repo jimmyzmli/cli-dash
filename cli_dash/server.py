@@ -569,9 +569,11 @@ def create_app(config: AppConfig, db: Database):
             return FileResponse(pkg_path)
         
         # Graceful fallback for optional files to avoid 404
-        if path in ["extensions.js", "extensions.css", "favicon.ico"]:
+        if path in ["extensions.js", "extensions.css", "favicon.ico", "templates.html"]:
             if path == "favicon.ico":
                 media_type = "image/x-icon"
+            elif path == "templates.html":
+                media_type = "text/html"
             else:
                 media_type = "application/javascript" if path.endswith(".js") else "text/css"
             return Response(content="", media_type=media_type)
