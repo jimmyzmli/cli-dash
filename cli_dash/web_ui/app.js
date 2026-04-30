@@ -183,12 +183,20 @@ const App = {
         const showJob = async (job) => {
             if (window.location.pathname !== `/job/${job.id}`) window.history.pushState({}, '', `/job/${job.id}`);
             activeJobId.value = job.id;
-            activeJobLabel.value = job.command;
+            activeJobLabel.value = `[Job ${job.id}] ${job.command || 'Loading...'}`;
             activeJob.value = job;
             consoleContent.value = 'Loading output...';
             if (window.innerWidth <= 768) showMonitor.value = true;
             
             try {
+                // Always fetch job details to get the authoritative command line from the DB
+                const jr = await fetch(`/api/job/${job.id}`);
+                if (jr.ok) {
+                    const fullJob = await jr.json();
+                    activeJobLabel.value = `[Job ${fullJob.id}] ${fullJob.command}`;
+                    activeJob.value = fullJob;
+                }
+
                 const r = await fetch(`/api/job/${job.id}/log?offset=0`);
                 const ld = await r.json();
                 consoleContent.value = ld.content || (ld.job_status === 'running' ? 'Initializing...' : 'No output captured.');
@@ -216,7 +224,7 @@ const App = {
             try {
                 const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron, job_type: jobType }) });
                 const data = await r.json();
-                if (data.job_id) showJob({ id: data.job_id, command: label || command, job_type: jobType });
+                if (data.job_id) showJob({ id: data.job_id, command: command, job_type: jobType });
             } catch (e) { alert('Failed to start command'); }
         };
         

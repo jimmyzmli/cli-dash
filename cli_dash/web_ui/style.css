@@ -236,6 +236,11 @@ button.warning:hover {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: 20px;
+}
+
+.card-header h2 {
+    flex-shrink: 0;
 }
 
 .header-actions {
@@ -609,6 +614,17 @@ button.warning:hover {
     display: flex;
     align-items: center;
     gap: 12px;
+    flex: 1;
+    min-width: 0;
+    justify-content: flex-end;
+}
+
+.active-job-id {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .close-btn {
