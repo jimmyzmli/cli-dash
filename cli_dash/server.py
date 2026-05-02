@@ -80,6 +80,7 @@ class AppConfig:
     extra_env: Optional[dict] = None
     on_startup: Optional[Callable] = None
     schedules_file: Optional[str] = None  # Path to schedules.json for seeding
+    ssl_dir: Optional[str] = None  # Directory containing cert.pem, privkey.pem, etc.
 
 
 def _get_package_web_ui() -> str:
@@ -639,11 +640,14 @@ class DashServer:
         load_dotenv(dotenv_path=env_path, override=True)
         self.config.host = os.getenv("WEB_UI_HOST", self.config.host)
         self.config.port = int(os.getenv("WEB_UI_PORT", str(self.config.port)))
+        self.config.ssl_dir = os.getenv("WEB_UI_SSL_DIR", self.config.ssl_dir)
 
         # Ensure paths are absolute relative to CWD
         self.config.web_ui_dir = os.path.abspath(self.config.web_ui_dir)
         self.config.data_dir = os.path.abspath(self.config.data_dir)
         self.config.log_dir = os.path.abspath(self.config.log_dir)
+        if self.config.ssl_dir:
+            self.config.ssl_dir = os.path.abspath(self.config.ssl_dir)
 
         self.pid_file = os.path.join(self.config.data_dir, "web-ui.pid")
         self.error_log = os.path.join(self.config.log_dir, "web-ui.log")
@@ -679,13 +683,65 @@ class DashServer:
                 pass
         return None
 
+    def _get_cert_expiry(self, cert_path):
+        """Get the expiry date of a PEM certificate using openssl CLI."""
+        import subprocess
+        import re
+        try:
+            # Get enddate
+            res = subprocess.run(
+                ["openssl", "x509", "-enddate", "-noout", "-in", cert_path],
+                capture_output=True, text=True, check=True
+            )
+            # notAfter=May  2 12:00:00 2026 GMT
+            line = res.stdout.strip()
+            if "=" in line:
+                date_str = line.split("=")[1]
+                # Normalize spaces
+                date_str = re.sub(' +', ' ', date_str)
+                # openssl format: May 2 12:00:00 2026 GMT
+                try:
+                    return datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z")
+                except ValueError:
+                    # Try without timezone
+                    return datetime.strptime(" ".join(date_str.split()[:-1]), "%b %d %H:%M:%S %Y")
+        except Exception as e:
+            logging.error(f"Error checking cert expiry: {e}")
+        return None
+
     def start(self):
+        # ANSI Colors
+        GREEN = "\033[92m"
+        BLUE = "\033[94m"
+        YELLOW = "\033[93m"
+        RED = "\033[91m"
+        BOLD = "\033[1m"
+        RESET = "\033[0m"
+
         pid = self.is_running()
         if pid:
-            print(f"Server is already running (PID: {pid})")
+            print(f"{YELLOW}Server is already running (PID: {pid}){RESET}")
             return
 
-        print(f"Starting server on {self.config.host}:{self.config.port}...")
+        # Print summary to console before daemonizing
+        print(f"{BOLD}{BLUE}Starting Control Center on {self.config.host}:{self.config.port}{RESET}")
+        print(f"  {BLUE}Data Dir:{RESET}    {self.config.data_dir}")
+        print(f"  {BLUE}Project UI:{RESET}  {self.config.web_ui_dir}")
+
+        if self.config.ssl_dir:
+            ssl_cert = os.path.join(self.config.ssl_dir, "fullchain.pem")
+            if os.path.exists(ssl_cert):
+                expiry = self._get_cert_expiry(ssl_cert)
+                if expiry:
+                    expiry_str = expiry.strftime("%Y-%m-%d %H:%M:%S")
+                    color = GREEN if expiry > datetime.now() else RED
+                    print(f"  {BLUE}SSL Expiry:{RESET}   {color}{expiry_str}{RESET}")
+                    if expiry < datetime.now():
+                        print(f"  {RED}{BOLD}WARNING: SSL Certificate is EXPIRED!{RESET}")
+                else:
+                    print(f"  {YELLOW}WARNING: Could not determine SSL certificate expiry date.{RESET}")
+            else:
+                print(f"  {YELLOW}WARNING: SSL files missing in {self.config.ssl_dir}{RESET}")
 
         # Check dependencies
         try:
@@ -709,7 +765,7 @@ class DashServer:
                     if child_pid > 0:
                         with open(self.pid_file, "w") as f:
                             f.write(str(child_pid))
-                        print(f"Server started in background (PID: {child_pid})")
+                        print(f"{GREEN}Server started in background (PID: {child_pid}){RESET}")
                         sys.exit(0)
                 except OSError as e:
                     print(f"Fork failed: {e}")
@@ -732,7 +788,7 @@ class DashServer:
                         creationflags=(subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP | 0x08000000),
                         stdout=log_file, stderr=subprocess.STDOUT, close_fds=True,
                     )
-                print("Server starting in background...")
+                print(f"{GREEN}Server starting in background...{RESET}")
                 sys.exit(0)
 
         # Write PID
@@ -787,7 +843,6 @@ class DashServer:
             daemon=True,
         )
         sched_thread.start()
-
         # Run uvicorn
         import uvicorn
 
@@ -799,6 +854,28 @@ class DashServer:
         log_config["formatters"]["default"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
         log_config["formatters"]["access"]["datefmt"] = "%Y-%m-%d %H:%M:%S"
 
+        # SSL Configuration
+        ssl_keyfile = None
+        ssl_certfile = None
+        if self.config.ssl_dir:
+            ssl_keyfile = os.path.join(self.config.ssl_dir, "privkey.pem")
+            ssl_certfile = os.path.join(self.config.ssl_dir, "fullchain.pem")
+            
+            if not os.path.exists(ssl_keyfile) or not os.path.exists(ssl_certfile):
+                logging.error(f"SSL requested but files missing in {self.config.ssl_dir}")
+                ssl_keyfile = None
+                ssl_certfile = None
+            else:
+                logging.info(f"Using SSL with cert: {ssl_certfile}")
+                expiry = self._get_cert_expiry(ssl_certfile)
+                if expiry:
+                    expiry_str = expiry.strftime("%Y-%m-%d %H:%M:%S")
+                    logging.info(f"SSL Certificate Expiry: {expiry_str}")
+                    if expiry < datetime.now():
+                        logging.warning("!!! SSL CERTIFICATE EXPIRED !!!")
+                else:
+                    logging.warning("Could not determine SSL certificate expiry date.")
+
         uvicorn.run(
             app,
             host=self.config.host,
@@ -806,12 +883,20 @@ class DashServer:
             log_level="info",
             access_log=False,
             log_config=log_config,
+            ssl_keyfile=ssl_keyfile,
+            ssl_certfile=ssl_certfile,
+            http="h11",
+            loop="asyncio"
         )
 
     def stop(self):
+        YELLOW = "\033[93m"
+        RED = "\033[91m"
+        RESET = "\033[0m"
+
         pid = self.is_running()
         if not pid:
-            print("Server is not running.")
+            print(f"{YELLOW}Server is not running.{RESET}")
             return
 
         print(f"Stopping server (PID: {pid})...")
@@ -826,14 +911,14 @@ class DashServer:
                 os.kill(pid, signal.SIGTERM)
                 time.sleep(1)
                 if self.is_running():
-                    print("Force killing...")
+                    print(f"{RED}Force killing...{RESET}")
                     os.kill(pid, signal.SIGKILL)
 
             if os.path.exists(self.pid_file):
                 os.remove(self.pid_file)
-            print("Server stopped.")
+            print(f"{YELLOW}Server stopped.{RESET}")
         except ProcessLookupError:
-            print("Process not found.")
+            print(f"{RED}Process not found.{RESET}")
             if os.path.exists(self.pid_file):
                 os.remove(self.pid_file)
 
@@ -914,6 +999,7 @@ class DashServer:
         parser.add_argument("-s", "--server", choices=["start", "stop", "restart"],
                             help="Server control")
         parser.add_argument("-p", "--port", type=int, help="Port to run on")
+        parser.add_argument("--ssl-dir", help="SSL directory (Let's Encrypt format)")
         parser.add_argument("--internal-run", action="store_true", help=argparse.SUPPRESS)
         parser.add_argument("command", nargs="?", choices=["db"], help="Subcommand")
         parser.add_argument("action", nargs="?", help="Subcommand action")
@@ -921,6 +1007,8 @@ class DashServer:
 
         if args.port:
             self.config.port = args.port
+        if args.ssl_dir:
+            self.config.ssl_dir = os.path.abspath(args.ssl_dir)
 
         if args.server == "start":
             self.start()
