@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Optional, List
 
 from cli_dash.database import Database
+from cli_dash.utils import get_next_cron_run
 
 
 class Broadcaster:
@@ -269,8 +270,6 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
 
 def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
     """Background thread that checks cron schedules every 60 seconds."""
-    from croniter import croniter
-
     logging.info("Scheduler thread started")
     while True:
         try:
@@ -287,13 +286,11 @@ def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
                         except Exception:
                             pass
 
-                    cron = croniter(s["cron_expr"], base_time)
-
                     if s["last_run"] is None:
                         db.update_schedule(s["id"], last_run=now.strftime("%Y-%m-%d %H:%M:%S"))
                         continue
 
-                    next_run = cron.get_next(datetime)
+                    next_run = get_next_cron_run(s["cron_expr"], base_time)
                     if next_run <= now:
                         is_missed = (now - next_run).total_seconds() > 120
                         if is_missed and not s.get("catch_up"):
@@ -499,8 +496,6 @@ def create_app(config: AppConfig, db: Database):
 
     @app.get("/api/schedules")
     async def get_schedules():
-        from croniter import croniter
-
         schedules = db.get_schedules()
         now = datetime.now()
         for s in schedules:
@@ -509,8 +504,7 @@ def create_app(config: AppConfig, db: Database):
                 s["minutes_until"] = 999999
                 continue
             try:
-                cron_iter = croniter(s["cron_expr"], now)
-                next_run = cron_iter.get_next(datetime)
+                next_run = get_next_cron_run(s["cron_expr"], now)
                 s["next_run_iso"] = next_run.isoformat()
                 s["minutes_until"] = int((next_run - now).total_seconds() / 60)
             except Exception as e:
