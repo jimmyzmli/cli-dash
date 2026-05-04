@@ -993,6 +993,118 @@ class DashServer:
         _seed_schedules(self.db, path)
         print(f"Imported schedules from {path}")
 
+    def autostart_cmd(self, action: str):
+        if os.name == "nt":
+            print("Notice: Autostart management is currently only implemented for macOS (LaunchAgents).")
+            print("Windows support is planned for a future update. Skipping for now.")
+            return
+
+        # ANSI Colors
+        GREEN = "\033[92m"
+        BLUE = "\033[94m"
+        YELLOW = "\033[93m"
+        RED = "\033[91m"
+        BOLD = "\033[1m"
+        RESET = "\033[0m"
+
+        project_name = os.path.basename(os.getcwd())
+        label = f"com.cli-dash.{project_name}"
+        plist_path = os.path.expanduser(f"~/Library/LaunchAgents/{label}.plist")
+
+        if action == "enable":
+            # 1. Cleanup legacy agents (if any)
+            agent_dir = os.path.expanduser("~/Library/LaunchAgents")
+            legacy_labels = []
+            if project_name == "actual-report":
+                legacy_labels.append("com.scheduled-script.actual-web-ui")
+            
+            # Try to remove by label directly in case file is already gone
+            for l in legacy_labels:
+                subprocess.run(["launchctl", "remove", l], stderr=subprocess.DEVNULL)
+
+            if os.path.exists(agent_dir):
+                # Patterns to find and delete plist files
+                legacy_patterns = [f"com.scheduled-script.{project_name}*.plist"]
+                if project_name == "actual-report":
+                    legacy_patterns.append("com.scheduled-script.actual-web-ui.plist")
+                
+                import glob
+                for pattern in legacy_patterns:
+                    for legacy_path in glob.glob(os.path.join(agent_dir, pattern)):
+                        legacy_name = os.path.basename(legacy_path)
+                        # Extract label from filename (remove .plist)
+                        legacy_label = legacy_name[:-6] if legacy_name.endswith(".plist") else legacy_name
+                        if legacy_name == f"{label}.plist":
+                            continue
+                        print(f"🧹 Cleaning up legacy agent: {legacy_name}")
+                        subprocess.run(["launchctl", "unload", legacy_path], stderr=subprocess.DEVNULL)
+                        subprocess.run(["launchctl", "remove", legacy_label], stderr=subprocess.DEVNULL)
+                        try:
+                            os.remove(legacy_path)
+                        except: pass
+
+            # 2. Generate plist
+            python_exe = sys.executable
+            # Ensure we use absolute path for the server script
+            server_script = os.path.abspath(sys.argv[0])
+            working_dir = os.getcwd()
+            
+            plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>{label}</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{python_exe}</string>
+        <string>{server_script}</string>
+        <string>-s</string>
+        <string>restart</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>{working_dir}</string>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"""
+            with open(plist_path, "w") as f:
+                f.write(plist_content)
+            
+            # 3. Load it
+            subprocess.run(["launchctl", "unload", plist_path], stderr=subprocess.DEVNULL)
+            res = subprocess.run(["launchctl", "load", plist_path])
+            if res.returncode == 0:
+                print(f"{GREEN}{BOLD}Autostart enabled!{RESET}")
+                print(f"  {BLUE}Label:{RESET} {label}")
+                print(f"  {BLUE}Path:{RESET}  {plist_path}")
+            else:
+                print(f"{RED}Error loading LaunchAgent.{RESET}")
+            
+        elif action == "disable":
+            if os.path.exists(plist_path):
+                subprocess.run(["launchctl", "unload", plist_path], stderr=subprocess.DEVNULL)
+                try:
+                    os.remove(plist_path)
+                    print(f"{YELLOW}Autostart disabled (removed {label}.plist){RESET}")
+                except Exception as e:
+                    print(f"{RED}Error removing plist: {e}{RESET}")
+            else:
+                print(f"{YELLOW}Autostart is not enabled.{RESET}")
+                
+        elif action == "status":
+            print(f"{BOLD}Autostart Status for {project_name}:{RESET}")
+            if os.path.exists(plist_path):
+                print(f"  {GREEN}Enabled:{RESET}  Yes ({plist_path})")
+                res = subprocess.run(["launchctl", "list", label], capture_output=True, text=True)
+                if res.returncode == 0:
+                    print(f"  {GREEN}Loaded:{RESET}   Yes (Active in launchctl)")
+                else:
+                    print(f"  {RED}Loaded:{RESET}    No (Exists but not loaded)")
+            else:
+                print(f"  {YELLOW}Enabled:{RESET}  No")
+
     def run(self):
         """Parse CLI args and dispatch to start/stop/restart/db init."""
         import argparse
@@ -1003,7 +1115,7 @@ class DashServer:
         parser.add_argument("-p", "--port", type=int, help="Port to run on")
         parser.add_argument("--ssl-dir", help="SSL directory (Let's Encrypt format)")
         parser.add_argument("--internal-run", action="store_true", help=argparse.SUPPRESS)
-        parser.add_argument("command", nargs="?", choices=["db"], help="Subcommand")
+        parser.add_argument("command", nargs="?", choices=["db", "autostart"], help="Subcommand")
         parser.add_argument("action", nargs="?", help="Subcommand action")
         args = parser.parse_args()
 
@@ -1029,5 +1141,11 @@ class DashServer:
             self.export_schedules_cmd()
         elif args.command == "db" and args.action == "import":
             self.import_schedules_cmd()
+        elif args.command == "autostart":
+            if args.action in ["enable", "disable", "status"]:
+                self.autostart_cmd(args.action)
+            else:
+                print(f"Unknown autostart action: {args.action}")
+                print("Usage: autostart [enable|disable|status]")
         else:
             parser.print_help()
