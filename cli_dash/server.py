@@ -157,6 +157,8 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
                 "text": True,
                 "bufsize": 1,
                 "universal_newlines": True,
+                "encoding": "utf-8",
+                "errors": "replace",
             }
             if os.name == "nt":
                 si = subprocess.STARTUPINFO()
