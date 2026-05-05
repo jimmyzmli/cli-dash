@@ -64,27 +64,32 @@
             <div class="resizer" id="drag-resizer" @mousedown="startResize"></div>
 
             <section class="monitor" id="monitor-section" :style="monitorStyle">
-                <div class="card console-card">
-                    <div class="card-header">
-                        <h2><span class="icon">💻</span> Live Console</h2>
-                        <div class="active-job-wrapper">
-                            <div class="active-job-id">Viewing: {{ activeJobLabel }}</div>
-                            <button class="close-btn" v-if="activeJobId" @click="closeConsole"
-                                title="Close Console">✕</button>
+                <div id="default-monitor" v-show="!monitorHidden" style="display: contents;">
+                    <div class="card console-card">
+                        <div class="card-header">
+                            <h2><span class="icon">💻</span> Live Console</h2>
+                            <div class="active-job-wrapper">
+                                <div class="active-job-id">Viewing: {{ activeJobLabel }}</div>
+                                <button class="close-btn" v-if="activeJobId" @click="closeConsole"
+                                    title="Close Console">✕</button>
+                            </div>
+                        </div>
+                        <!-- Rclone / custom progress hook -->
+                        <component v-if="logComponent" :is="logComponent" :job="activeJob" :log-content="consoleContent">
+                        </component>
+                        <div id="console" class="console" ref="consoleEl">
+                            <div v-if="!activeJobId" class="placeholder">Select a task to see output...</div>
+                            <template v-else>{{ consoleContent }}</template>
                         </div>
                     </div>
-                    <!-- Rclone / custom progress hook -->
-                    <component v-if="logComponent" :is="logComponent" :job="activeJob" :log-content="consoleContent">
-                    </component>
-                    <div id="console" class="console" ref="consoleEl">
-                        <div v-if="!activeJobId" class="placeholder">Select a task to see output...</div>
-                        <template v-else>{{ consoleContent }}</template>
+
+                    <div class="card history-card">
+                        <history-view></history-view>
                     </div>
                 </div>
-
-                <div class="card history-card">
-                    <history-view></history-view>
-                </div>
+                
+                <!-- Teleport target for custom tabs -->
+                <div id="custom-monitor" v-show="monitorHidden" style="display: contents;"></div>
             </section>
         </main>
 

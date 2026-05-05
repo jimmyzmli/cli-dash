@@ -146,10 +146,9 @@ const App = {
             if (window.innerWidth <= 768) showMonitor.value = false;
         };
 
-        const activeTabComponent = computed(() => {
-            const tab = tabs.value.find(t => t.id === currentTab.value);
-            return tab ? tab.component : null;
-        });
+        const activeTab = computed(() => tabs.value.find(t => t.id === currentTab.value));
+        const activeTabComponent = computed(() => activeTab.value ? activeTab.value.component : null);
+        const monitorHidden = computed(() => activeTab.value && activeTab.value.hideMonitor);
 
         // SSE
         const setupSSE = () => {
@@ -282,7 +281,7 @@ const App = {
 
         return {
             appConfig, connected, headerState, allHeaderOptions, saveHeaderState,
-            tabs, currentTab, switchTab, activeTabComponent,
+            tabs, currentTab, switchTab, activeTabComponent, monitorHidden,
             showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
             activeJobId, activeJobLabel, activeJob, consoleContent, closeConsole,
             modal, closeModal, logComponent
@@ -489,6 +488,10 @@ const HistoryView = {
         const formatTime = (ts) => {
             const d = new Date(ts + 'Z');
             return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString();
+        };
+
+        window.showMonitorGlobal = (show = true) => {
+            showMonitor.value = show;
         };
 
         return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, showJob: window.showJobGlobal };
