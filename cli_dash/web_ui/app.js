@@ -297,16 +297,22 @@ const CommandsView = {
         const customCmd = ref('');
         const presets = ref([]);
         
-        onMounted(async () => {
+        const loadCommands = async () => {
             try {
-                const r = await fetch('/static/config/commands.json');
-                commandCategories.value = await r.json();
-                presets.value = [];
-                commandCategories.value.forEach(cat => {
-                    if(cat.commands) cat.commands.forEach(c => presets.value.push(c.command));
-                    else if(cat.command) presets.value.push(cat.command);
-                });
+                const r = await fetch(`/static/config/commands.json?t=${Date.now()}`);
+                if (r.ok) {
+                    commandCategories.value = await r.json();
+                    presets.value = [];
+                    commandCategories.value.forEach(cat => {
+                        if(cat.commands) cat.commands.forEach(c => presets.value.push(c.command));
+                        else if(cat.command) presets.value.push(cat.command);
+                    });
+                }
             } catch (e) {}
+        };
+        
+        onMounted(() => {
+            loadCommands();
         });
         
         const runCustom = () => {
@@ -316,7 +322,7 @@ const CommandsView = {
             }
         };
 
-        return { commandCategories, customCmd, presets, runCustom, runCommand: window.runCommand };
+        return { commandCategories, customCmd, presets, runCustom, loadCommands, runCommand: window.runCommand };
     }
 };
 
