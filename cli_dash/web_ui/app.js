@@ -7,6 +7,48 @@ window.dashExtensions = { tabs: [], headerOptions: [], onInit: [] };
 window.registerTab = function(tab) { window.dashExtensions.tabs.push(tab); }
 window.registerHeaderOption = function(opt) { window.dashExtensions.headerOptions.push(opt); }
 
+const DEFAULT_PALETTE = [
+    '#3080f4', // Blue
+    '#2ea043', // Green
+    '#8250df', // Purple
+    '#d29922', // Orange/Yellow
+    '#f85149', // Red
+    '#db61a2', // Pink
+    '#00a3a6'  // Teal
+];
+
+window.queuesList = [];
+
+window.parseQueues = function(queuesData) {
+    if (!queuesData || !Array.isArray(queuesData)) {
+        window.queuesList = [];
+        return;
+    }
+    window.queuesList = queuesData.map((item, index) => {
+        const defaultColor = DEFAULT_PALETTE[index % DEFAULT_PALETTE.length];
+        if (typeof item === 'string') {
+            return { name: item, color: defaultColor };
+        } else if (item && typeof item === 'object') {
+            return { name: item.name || '', color: item.color || defaultColor };
+        }
+        return { name: '', color: defaultColor };
+    });
+};
+
+window.getQueueColor = function(name) {
+    if (!name) return '#0969da'; // Default fallback
+    const found = window.queuesList && window.queuesList.find(q => q.name === name);
+    if (found) return found.color;
+    
+    // Hash the name to consistently pick a color from the palette
+    let hash = 0;
+    for (let i = 0; i < name.length; i++) {
+        hash = name.charCodeAt(i) + ((hash << 5) - hash);
+    }
+    const index = Math.abs(hash) % DEFAULT_PALETTE.length;
+    return DEFAULT_PALETTE[index];
+};
+
 // Define Vue app
 const App = {
     setup() {
@@ -268,6 +310,14 @@ const App = {
             // Load app config
             try { const r = await fetch('/static/config/app.json'); if (r.ok) appConfig.value = await r.json(); } catch(e){}
             try { const r = await fetch('/api/config'); if (r.ok) { const d = await r.json(); if(d.title) document.title = d.title; } } catch(e){}
+            try {
+                const r = await fetch(`/static/config/commands.json?t=${Date.now()}`);
+                if (r.ok) {
+                    const data = await r.json();
+                    const qList = (data && typeof data === 'object') ? (data.queues || []) : [];
+                    window.parseQueues(qList);
+                }
+            } catch(e){}
             
             // Apply header options
             const opts = appConfig.value.header_options || [];
@@ -310,12 +360,26 @@ const App = {
             });
         });
 
+        const getOptionIcon = (name) => {
+            const icons = {
+                shield: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM12 4.1l6 2.25v5.65c0 4.16-5.06 7.42-6 8-1-.58-6-3.84-6-8V6.35l6-2.25z"/></svg>',
+                bolt: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
+                sync: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>'
+            };
+            return icons[name] || '';
+        };
+
+        const toggleHeaderOption = (id) => {
+            headerState[id] = !headerState[id];
+            saveHeaderState(id);
+        };
+
         return {
             appConfig, connected, headerState, allHeaderOptions, saveHeaderState,
             tabs, currentTab, switchTab, activeTabComponent, monitorHidden,
             showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
             activeJobId, activeJobLabel, activeJob, consoleContent, closeConsole, showHelpConsole,
-            modal, closeModal, logComponent
+            modal, closeModal, logComponent, getOptionIcon, toggleHeaderOption
         };
     }
 };
@@ -329,6 +393,18 @@ const CommandsView = {
         const presets = ref([]);
         const queues = ref([]);
         
+        const normalizedQueues = computed(() => {
+            return queues.value.map((item, index) => {
+                const defaultColor = DEFAULT_PALETTE[index % DEFAULT_PALETTE.length];
+                if (typeof item === 'string') {
+                    return { name: item, color: defaultColor };
+                } else if (item && typeof item === 'object') {
+                    return { name: item.name || '', color: item.color || defaultColor };
+                }
+                return { name: '', color: defaultColor };
+            });
+        });
+        
         const loadCommands = async () => {
             try {
                 const r = await fetch(`/static/config/commands.json?t=${Date.now()}`);
@@ -341,6 +417,7 @@ const CommandsView = {
                         commandCategories.value = data.commands || [];
                         queues.value = data.queues || [];
                     }
+                    window.parseQueues(queues.value);
                     presets.value = [];
                     commandCategories.value.forEach(cat => {
                         if(cat.commands) cat.commands.forEach(c => presets.value.push(c.command));
@@ -361,7 +438,11 @@ const CommandsView = {
             }
         };
 
-        return { commandCategories, customCmd, presets, queues, runCustom, loadCommands, runCommand: window.runCommand };
+        const filterHistory = (cmd) => {
+            window.dispatchEvent(new CustomEvent('filter-history', { detail: cmd }));
+        };
+
+        return { commandCategories, customCmd, presets, queues, normalizedQueues, runCustom, loadCommands, runCommand: window.runCommand, getQueueColor: window.getQueueColor, filterHistory };
     }
 };
 
@@ -474,7 +555,7 @@ const ScheduledView = {
         return {
             schedules, searchQuery, filteredSchedules, showNew, newSched, saveNew,
             editingId, editData, startEdit, saveEdit, deleteSchedule, toggleEnabled, toggleCatchUp, formatNextRun,
-            runSchedule, filterHistory, exportSchedules, importSchedules
+            runSchedule, filterHistory, exportSchedules, importSchedules, getQueueColor: window.getQueueColor
         };
     }
 };
@@ -540,7 +621,7 @@ const HistoryView = {
             showMonitor.value = show;
         };
 
-        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, showJob: window.showJobGlobal };
+        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, showJob: window.showJobGlobal, getQueueColor: window.getQueueColor };
     }
 };
 

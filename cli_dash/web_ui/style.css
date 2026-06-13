@@ -290,6 +290,9 @@ button.warning:hover {
     border-radius: 4px;
     cursor: pointer;
     line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .icon-btn:hover {
@@ -391,33 +394,67 @@ button.warning:hover {
     background: rgba(88, 166, 255, 0.1);
 }
 
-.option-toggle {
+#header-options {
     display: flex;
     align-items: center;
     gap: 8px;
-    background: var(--hover-bg);
+    flex-wrap: nowrap;
+}
+
+.option-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
     padding: 6px 12px;
     border-radius: 20px;
-    border: 1px solid var(--border-color);
+    border: 1px solid rgba(255, 255, 255, 0.15);
     font-size: 0.85rem;
-}
-
-.option-toggle input[type="checkbox"] {
+    white-space: nowrap;
     cursor: pointer;
+    user-select: none;
+    color: var(--text-secondary);
+    transition: all 0.2s ease;
+    min-height: 32px;
+    opacity: 0.55;
 }
 
-.option-toggle:has(input:checked) {
-    border-color: var(--success-color);
-    background: rgba(35, 134, 54, 0.1);
+.option-toggle:not(:has(.toggle-label)) {
+    padding: 6px !important;
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
 }
 
-.option-toggle:not(:has(input:checked))#dry-run-option-container {
-    border-color: var(--error-color);
-    background: rgba(218, 54, 51, 0.1);
+.option-toggle svg {
+    display: block;
+    flex-shrink: 0;
 }
 
-.option-toggle:has(input:checked) label {
+.option-toggle:has(.toggle-label) svg {
+    margin-right: 4px;
+}
+
+.option-toggle:hover {
+    border-color: var(--text-secondary);
     color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.03);
+    opacity: 0.85;
+}
+
+.option-toggle.active {
+    background: var(--accent-color) !important;
+    border-color: var(--accent-color) !important;
+    color: var(--bg-color) !important;
+    font-weight: 500;
+    opacity: 1;
+}
+
+.option-toggle.active:hover {
+    background: #478edb !important;
+    border-color: #478edb !important;
+    color: var(--bg-color) !important;
+    opacity: 1;
 }
 
 .option-toggle.small {
@@ -466,7 +503,6 @@ button.warning:hover {
     background: var(--card-bg);
     border: 1px solid var(--border-color);
     border-radius: 12px;
-    margin-bottom: 10px;
     transition: all 0.2s ease;
 }
 
@@ -496,6 +532,7 @@ button.warning:hover {
 
 .schedule-item:hover {
     border-color: var(--accent-color);
+    z-index: 10;
 }
 
 .schedule-item.disabled .schedule-info {
@@ -534,7 +571,8 @@ button.warning:hover {
 .schedule-actions {
     position: relative;
     display: flex;
-    gap: 10px;
+    align-items: center;
+    gap: 6px;
 }
 
 .kebab-menu {
@@ -547,7 +585,8 @@ button.warning:hover {
     right: 0;
     top: 100%;
     background: var(--card-bg);
-    min-width: 140px;
+    min-width: 160px;
+    width: max-content;
     box-shadow: var(--shadow);
     z-index: 100;
     border: 1px solid var(--border-color);
@@ -569,6 +608,7 @@ button.warning:hover {
     color: var(--text-primary);
     cursor: pointer;
     transition: background 0.2s;
+    white-space: nowrap;
 }
 
 .dropdown-item:hover {
@@ -925,10 +965,12 @@ button.warning:hover {
     border-radius: 6px;
     gap: 10px;
     z-index: 1;
+    cursor: pointer;
     transition: border-color 0.2s ease;
 }
 
 .command-row-entry:hover {
+    border-color: var(--accent-color);
     z-index: 10; /* Boost stacking index when hovered so absolute dropdown is drawn on top */
 }
 
@@ -949,7 +991,8 @@ button.warning:hover {
     flex-shrink: 0;
 }
 
-.command-row-entry .action-btn {
+.command-row-entry .action-btn,
+.schedule-actions .action-btn {
     background: transparent;
     border: none;
     padding: 4px 8px;
@@ -965,25 +1008,30 @@ button.warning:hover {
     transition: all 0.2s ease;
 }
 
-.command-row-entry .action-btn:hover {
+.command-row-entry .action-btn:hover,
+.schedule-actions .action-btn:hover {
     background: var(--border-color);
     color: var(--text-primary);
 }
 
-.command-row-entry .play-btn {
+.command-row-entry .play-btn,
+.schedule-actions .play-btn {
     color: var(--accent-color);
 }
 
-.command-row-entry .play-btn:hover {
+.command-row-entry .play-btn:hover,
+.schedule-actions .play-btn:hover {
     background: rgba(88, 166, 255, 0.1);
     color: var(--accent-color);
 }
 
-.command-row-entry .kebab-menu {
+.command-row-entry .kebab-menu,
+.schedule-actions .kebab-menu {
     position: relative;
 }
 
-.command-row-entry .kebab-menu button.icon-btn {
+.command-row-entry .kebab-menu button.icon-btn,
+.schedule-actions .kebab-menu button.icon-btn {
     background: transparent;
     border: none;
     padding: 4px 8px;
@@ -996,14 +1044,14 @@ button.warning:hover {
     transition: all 0.2s ease;
 }
 
-.command-row-entry .kebab-menu button.icon-btn:hover {
+.command-row-entry .kebab-menu button.icon-btn:hover,
+.schedule-actions .kebab-menu button.icon-btn:hover {
     background: var(--border-color);
     color: var(--text-primary);
 }
 
-/* Hover bridge for both schedules list and command tab */
-.command-row .kebab-menu:hover::after,
-.command-row-entry .kebab-menu:hover::after {
+/* Hover bridge for all kebab menus */
+.kebab-menu:hover::after {
     content: '';
     position: absolute;
     top: 100%;
@@ -1014,34 +1062,10 @@ button.warning:hover {
     z-index: 99;
 }
 
-/* Dropdown positions */
-.command-row .kebab-menu .dropdown-content,
-.command-row-entry .kebab-menu .dropdown-content {
+/* Dropdown positions for all kebab menus */
+.kebab-menu .dropdown-content {
     top: 100%;
     right: 0;
     min-width: 180px;
     margin-top: 6px;
-}
-
-/* Ensure the button inside the kebab menu fills the container to provide a large touch target (schedules) */
-.command-row .kebab-menu button.icon-btn {
-    width: 100%;
-    height: 100%;
-    background: transparent;
-    border: none;
-    border-radius: 0 5px 5px 0;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    font-size: 1.2rem;
-    color: var(--text-secondary);
-    padding: 0;
-    margin: 0;
-    transition: background-color 0.2s, color 0.2s;
-}
-
-.command-row .kebab-menu button.icon-btn:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text-primary);
 }

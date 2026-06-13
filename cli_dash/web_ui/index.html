@@ -32,10 +32,11 @@
             <div class="header-actions">
                 <div id="header-options">
                     <div class="option-toggle" v-for="opt in allHeaderOptions" :key="opt.id"
-                        :id="opt.warn_off ? opt.id + '-option-container' : ''">
-                        <input type="checkbox" :id="opt.id + '-option'" v-model="headerState[opt.id]"
-                            @change="saveHeaderState(opt.id)">
-                        <label :for="opt.id + '-option'">{{ opt.label }}</label>
+                        :class="{ active: headerState[opt.id] }"
+                        @click="toggleHeaderOption(opt.id)"
+                        :title="opt.alt || opt.label || ''">
+                        <span v-if="opt.icon && getOptionIcon(opt.icon)" v-html="getOptionIcon(opt.icon)"></span>
+                        <span v-if="opt.label" class="toggle-label">{{ opt.label }}</span>
                     </div>
                 </div>
                 <div class="status-indicator">
@@ -116,15 +117,15 @@
                     <h2><span class="icon">{{ cat.icon }}</span> {{ cat.title || cat.label }}</h2>
                     <template v-if="cat.commands">
                         <div class="button-group">
-                            <div v-for="cmd in cat.commands" :key="cmd.command" class="command-row-entry">
+                            <div v-for="cmd in cat.commands" :key="cmd.command" class="command-row-entry" @click="filterHistory(cmd.command)">
                                 <span class="command-label" :title="cmd.command">{{ cmd.label }}</span>
-                                <div class="command-actions">
+                                <div class="command-actions" @click.stop>
                                     <button class="action-btn play-btn" @click="runCommand(cmd.command, cmd.description || cmd.label)" title="Run without queue">▶</button>
-                                    <div class="kebab-menu" v-if="queues.length">
+                                    <div class="kebab-menu" v-if="normalizedQueues.length">
                                         <button class="icon-btn">⋮</button>
                                         <div class="dropdown-content">
-                                            <div class="dropdown-item" v-for="q in queues" :key="q" @click="runCommand(cmd.command, cmd.description || cmd.label, 0, 'command', q)">
-                                                Add to {{ q }} Queue
+                                            <div class="dropdown-item" v-for="q in normalizedQueues" :key="q.name" @click="runCommand(cmd.command, cmd.description || cmd.label, 0, 'command', q.name)">
+                                                Add to <span :style="{ color: q.color, fontWeight: 'bold' }">{{ q.name }}</span> Queue
                                             </div>
                                         </div>
                                     </div>
@@ -134,15 +135,15 @@
                     </template>
                     <template v-else-if="cat.command">
                         <p v-if="cat.description" style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:15px">{{ cat.description }}</p>
-                        <div class="command-row-entry">
+                        <div class="command-row-entry" @click="filterHistory(cat.command)">
                             <span class="command-label" :title="cat.command">{{ cat.label }}</span>
-                            <div class="command-actions">
+                            <div class="command-actions" @click.stop>
                                 <button class="action-btn play-btn" @click="runCommand(cat.command, cat.label)" title="Run without queue">▶</button>
-                                <div class="kebab-menu" v-if="queues.length">
+                                <div class="kebab-menu" v-if="normalizedQueues.length">
                                     <button class="icon-btn">⋮</button>
                                     <div class="dropdown-content">
-                                        <div class="dropdown-item" v-for="q in queues" :key="q" @click="runCommand(cat.command, cat.label, 0, 'command', q)">
-                                            Add to {{ q }} Queue
+                                        <div class="dropdown-item" v-for="q in normalizedQueues" :key="q.name" @click="runCommand(cat.command, cat.label, 0, 'command', q.name)">
+                                            Add to <span :style="{ color: q.color, fontWeight: 'bold' }">{{ q.name }}</span> Queue
                                         </div>
                                     </div>
                                 </div>
@@ -171,9 +172,21 @@
                     <div style="display:flex;justify-content:space-between;align-items:center">
                         <h2><span class="icon">📅</span> Cron Schedules</h2>
                         <div style="display:flex;gap:5px;">
-                            <button class="icon-btn" @click="exportSchedules" title="Export to schedules.json">⬇️</button>
-                            <button class="icon-btn" @click="importSchedules" title="Import from schedules.json (Overwrite)">⬆️</button>
-                            <button class="icon-btn accent" @click="showNew = true" title="New Schedule">➕</button>
+                            <button class="icon-btn" @click="exportSchedules" title="Export to schedules.json">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                                    <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+                                </svg>
+                            </button>
+                            <button class="icon-btn" @click="importSchedules" title="Import from schedules.json (Overwrite)">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                                    <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/>
+                                </svg>
+                            </button>
+                            <button class="icon-btn" @click="showNew = true" title="New Schedule">
+                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                                    <path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/>
+                                </svg>
+                            </button>
                         </div>
                     </div>
                     <div class="search-wrapper">
@@ -197,7 +210,7 @@
                 <div class="schedule-list">
                     <div v-for="s in filteredSchedules" :key="s.id" class="schedule-item" :class="{ disabled: !s.enabled }">
                         <div class="catch-up-overlay" v-if="s.catch_up" title="Catch Up Enabled">⚡</div>
-                        <div class="schedule-info" @click="filterHistory(s.command)">
+                        <div class="schedule-info" @click="editingId === s.id ? null : filterHistory(s.command)">
                             <div class="schedule-label">
                                 <input v-if="editingId === s.id" type="text" v-model="editData.label" @keypress.enter="saveEdit(s.id)">
                                 <template v-else>{{ s.label }}</template>
@@ -211,15 +224,15 @@
                                 </template>
                                 <template v-else>
                                     {{ s.cron_expr }} • {{ s.command }}
-                                    <span v-if="s.queue_name" class="cron-badge" style="background:#0969da;margin-left:5px">{{ s.queue_name }}</span>
+                                    <span v-if="s.queue_name" class="cron-badge" :style="{ backgroundColor: getQueueColor(s.queue_name), marginLeft: '5px' }">{{ s.queue_name }}</span>
                                 </template>
                             </div>
                         </div>
-                        <div class="schedule-actions">
+                        <div class="schedule-actions" @click.stop>
+                            <button class="action-btn play-btn" @click="runSchedule(s)" title="Run Now">▶</button>
                             <div class="kebab-menu">
                                 <button class="icon-btn">⋮</button>
                                 <div class="dropdown-content">
-                                    <div class="dropdown-item" @click="runSchedule(s)">Run Now</div>
                                     <div class="dropdown-item" @click="editingId === s.id ? saveEdit(s.id) : startEdit(s)">{{ editingId === s.id ? 'Save' : 'Edit' }}</div>
                                     <div class="dropdown-item" @click="toggleEnabled(s)">{{ s.enabled ? 'Deactivate' : 'Activate' }}</div>
                                     <div class="dropdown-item" @click="toggleCatchUp(s)">{{ s.catch_up ? 'Disable Catch Up' : 'Enable Catch Up' }}</div>
@@ -254,7 +267,7 @@
                         <span class="job-time">{{ formatTime(job.created_at) }}</span>
                         <span class="job-cmd">{{ job.command }}</span>
                         <span v-if="job.is_cron" class="cron-badge">CRON</span>
-                        <span v-if="job.queue_name" class="cron-badge" style="background:#0969da">{{ job.queue_name }}</span>
+                        <span v-if="job.queue_name" class="cron-badge" :style="{ backgroundColor: getQueueColor(job.queue_name) }">{{ job.queue_name }}</span>
                         <span class="status-badge" :class="'status-' + job.status">{{ job.status }}</span>
                     </div>
                     <div class="job-actions">
