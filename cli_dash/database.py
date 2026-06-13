@@ -8,6 +8,9 @@ import os
 import time
 from datetime import datetime
 
+# Sentinel for PATCH updates where a field can be cleared to None / null.
+NOT_SET = object()
+
 
 class Database:
     """SQLite-backed storage for jobs and cron schedules."""
@@ -34,7 +37,8 @@ class Database:
                 is_cron INTEGER DEFAULT 0,
                 job_type TEXT DEFAULT 'command',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                finished_at TIMESTAMP
+                finished_at TIMESTAMP,
+                queue_name TEXT
             )
         ''')
         c.execute('''
@@ -46,7 +50,8 @@ class Database:
                 enabled INTEGER DEFAULT 1,
                 last_run TIMESTAMP,
                 next_run TIMESTAMP,
-                catch_up INTEGER DEFAULT 0
+                catch_up INTEGER DEFAULT 0,
+                queue_name TEXT
             )
         ''')
 
@@ -55,12 +60,17 @@ class Database:
             ("is_cron", "jobs", "0"),
             ("job_type", "jobs", "'command'"),
             ("output", "jobs", None),
+            ("queue_name", "jobs", "NULL"),
             ("catch_up", "schedules", "0"),
+            ("queue_name", "schedules", "NULL"),
         ]:
             try:
-                default_clause = f" DEFAULT {default}" if default else ""
-                col_type = "INTEGER" if default and default.isdigit() else "TEXT"
-                c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}{default_clause}")
+                if default == "NULL":
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                else:
+                    default_clause = f" DEFAULT {default}" if default is not None else ""
+                    col_type = "INTEGER" if default and default.isdigit() else "TEXT"
+                    c.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_type}{default_clause}")
             except sqlite3.OperationalError:
                 pass  # Column already exists
 
@@ -80,14 +90,14 @@ class Database:
 
     # --- Job CRUD ---
 
-    def create_job(self, command, is_cron=0, job_type='command'):
+    def create_job(self, command, is_cron=0, job_type='command', queue_name=None):
         for _ in range(5):
             try:
                 conn = self._connect()
                 c = conn.cursor()
                 c.execute(
-                    'INSERT INTO jobs (command, status, is_cron, job_type) VALUES (?, ?, ?, ?)',
-                    (command, 'pending', is_cron, job_type),
+                    'INSERT INTO jobs (command, status, is_cron, job_type, queue_name) VALUES (?, ?, ?, ?, ?)',
+                    (command, 'pending', is_cron, job_type, queue_name),
                 )
                 job_id = c.lastrowid
                 conn.commit()
@@ -159,6 +169,22 @@ class Database:
         conn.close()
         return rows
 
+    def get_running_jobs_in_queue(self, queue_name):
+        conn = self._connect()
+        c = conn.cursor()
+        c.execute("SELECT * FROM jobs WHERE queue_name = ? AND status = 'running'", (queue_name,))
+        rows = [dict(row) for row in c.fetchall()]
+        conn.close()
+        return rows
+
+    def get_next_pending_job_in_queue(self, queue_name):
+        conn = self._connect()
+        c = conn.cursor()
+        c.execute("SELECT * FROM jobs WHERE queue_name = ? AND status = 'pending' ORDER BY id ASC LIMIT 1", (queue_name,))
+        row = c.fetchone()
+        conn.close()
+        return dict(row) if row else None
+
     # --- Schedule CRUD ---
 
     def get_schedules(self):
@@ -169,18 +195,18 @@ class Database:
         conn.close()
         return rows
 
-    def create_schedule(self, label, command, cron_expr, catch_up=0):
+    def create_schedule(self, label, command, cron_expr, catch_up=0, queue_name=None):
         conn = self._connect()
         c = conn.cursor()
         c.execute(
-            'INSERT INTO schedules (label, command, cron_expr, catch_up) VALUES (?, ?, ?, ?)',
-            (label, command, cron_expr, 1 if catch_up else 0),
+            'INSERT INTO schedules (label, command, cron_expr, catch_up, queue_name) VALUES (?, ?, ?, ?, ?)',
+            (label, command, cron_expr, 1 if catch_up else 0, queue_name),
         )
         conn.commit()
         conn.close()
 
     def update_schedule(self, schedule_id, label=None, command=None, cron_expr=None,
-                        enabled=None, last_run=None, next_run=None, catch_up=None):
+                        enabled=None, last_run=None, next_run=None, catch_up=None, queue_name=NOT_SET):
         conn = self._connect()
         c = conn.cursor()
         if label is not None:
@@ -197,6 +223,8 @@ class Database:
             c.execute('UPDATE schedules SET next_run = ? WHERE id = ?', (next_run, schedule_id))
         if catch_up is not None:
             c.execute('UPDATE schedules SET catch_up = ? WHERE id = ?', (1 if catch_up else 0, schedule_id))
+        if queue_name is not NOT_SET:
+            c.execute('UPDATE schedules SET queue_name = ? WHERE id = ?', (queue_name, schedule_id))
         conn.commit()
         conn.close()
 

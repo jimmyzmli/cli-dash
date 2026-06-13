@@ -111,14 +111,38 @@
                     <h2><span class="icon">{{ cat.icon }}</span> {{ cat.title || cat.label }}</h2>
                     <template v-if="cat.commands">
                         <div class="button-group">
-                            <button v-for="cmd in cat.commands" :key="cmd.command" :title="cmd.command" @click="runCommand(cmd.command, cmd.description || cmd.label)">
-                                {{ cmd.label }}
-                            </button>
+                            <div v-for="cmd in cat.commands" :key="cmd.command" class="command-row-entry">
+                                <span class="command-label" :title="cmd.command">{{ cmd.label }}</span>
+                                <div class="command-actions">
+                                    <button class="action-btn play-btn" @click="runCommand(cmd.command, cmd.description || cmd.label)" title="Run without queue">▶</button>
+                                    <div class="kebab-menu" v-if="queues.length">
+                                        <button class="icon-btn">⋮</button>
+                                        <div class="dropdown-content">
+                                            <div class="dropdown-item" v-for="q in queues" :key="q" @click="runCommand(cmd.command, cmd.description || cmd.label, 0, 'command', q)">
+                                                Add to {{ q }} Queue
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </template>
                     <template v-else-if="cat.command">
                         <p v-if="cat.description" style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:15px">{{ cat.description }}</p>
-                        <button class="accent" @click="runCommand(cat.command, cat.label)">Run Command</button>
+                        <div class="command-row-entry">
+                            <span class="command-label" :title="cat.command">{{ cat.label }}</span>
+                            <div class="command-actions">
+                                <button class="action-btn play-btn" @click="runCommand(cat.command, cat.label)" title="Run without queue">▶</button>
+                                <div class="kebab-menu" v-if="queues.length">
+                                    <button class="icon-btn">⋮</button>
+                                    <div class="dropdown-content">
+                                        <div class="dropdown-item" v-for="q in queues" :key="q" @click="runCommand(cat.command, cat.label, 0, 'command', q)">
+                                            Add to {{ q }} Queue
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </template>
                 </div>
             </div>
@@ -158,6 +182,7 @@
                         <input type="text" v-model="newSched.label" placeholder="Label">
                         <input type="text" v-model="newSched.command" placeholder="Command">
                         <input type="text" v-model="newSched.cron_expr" placeholder="Cron (e.g. 0 10 * * *)">
+                        <input type="text" v-model="newSched.queue" placeholder="Queue (optional)">
                     </div>
                     <div class="form-actions">
                         <button class="small-btn" @click="showNew = false">Cancel</button>
@@ -176,9 +201,13 @@
                             <div class="schedule-meta">
                                 <template v-if="editingId === s.id">
                                     <input type="text" v-model="editData.cron_expr" @keypress.enter="saveEdit(s.id)" style="margin-bottom: 5px;">
+                                    <input type="text" v-model="editData.queue" @keypress.enter="saveEdit(s.id)" style="margin-bottom: 5px;" placeholder="Queue (optional)">
                                     <input type="text" v-model="editData.command" @keypress.enter="saveEdit(s.id)">
                                 </template>
-                                <template v-else>{{ s.cron_expr }} • {{ s.command }}</template>
+                                <template v-else>
+                                    {{ s.cron_expr }} • {{ s.command }}
+                                    <span v-if="s.queue_name" class="cron-badge" style="background:#0969da;margin-left:5px">{{ s.queue_name }}</span>
+                                </template>
                             </div>
                         </div>
                         <div class="schedule-actions">
@@ -220,6 +249,7 @@
                         <span class="job-time">{{ formatTime(job.created_at) }}</span>
                         <span class="job-cmd">{{ job.command }}</span>
                         <span v-if="job.is_cron" class="cron-badge">CRON</span>
+                        <span v-if="job.queue_name" class="cron-badge" style="background:#0969da">{{ job.queue_name }}</span>
                         <span class="status-badge" :class="'status-' + job.status">{{ job.status }}</span>
                     </div>
                     <div class="job-actions">

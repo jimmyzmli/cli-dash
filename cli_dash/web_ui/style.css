@@ -846,3 +846,170 @@ button.warning:hover {
         width: 100%;
     }
 }
+
+/* Command rows with optional queue kebab menu */
+.command-row {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    width: 100%;
+    z-index: 1;
+}
+
+.command-row:hover {
+    z-index: 10;
+}
+
+.command-row button {
+    margin: 0;
+}
+
+.command-row button:not(.icon-btn) {
+    flex: 1;
+    padding-right: 48px;
+}
+
+.command-row .kebab-menu {
+    position: absolute;
+    right: 1px;
+    top: 1px;
+    bottom: 1px;
+    width: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+}
+
+/* Command entries with a direct play button (Command tab) */
+.command-row-entry {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--hover-bg);
+    border: 1px solid var(--border-color);
+    padding: 10px 15px;
+    border-radius: 6px;
+    gap: 10px;
+    z-index: 1;
+    transition: border-color 0.2s ease;
+}
+
+.command-row-entry:hover {
+    z-index: 10; /* Boost stacking index when hovered so absolute dropdown is drawn on top */
+}
+
+.command-row-entry .command-label {
+    font-weight: 500;
+    color: var(--text-primary);
+    font-size: 0.95rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+}
+
+.command-row-entry .command-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.command-row-entry .action-btn {
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+    margin: 0;
+    transition: all 0.2s ease;
+}
+
+.command-row-entry .action-btn:hover {
+    background: var(--border-color);
+    color: var(--text-primary);
+}
+
+.command-row-entry .play-btn {
+    color: var(--accent-color);
+}
+
+.command-row-entry .play-btn:hover {
+    background: rgba(88, 166, 255, 0.1);
+    color: var(--accent-color);
+}
+
+.command-row-entry .kebab-menu {
+    position: relative;
+}
+
+.command-row-entry .kebab-menu button.icon-btn {
+    background: transparent;
+    border: none;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 1rem;
+    color: var(--text-secondary);
+    line-height: 1;
+    margin: 0;
+    transition: all 0.2s ease;
+}
+
+.command-row-entry .kebab-menu button.icon-btn:hover {
+    background: var(--border-color);
+    color: var(--text-primary);
+}
+
+/* Hover bridge for both schedules list and command tab */
+.command-row .kebab-menu:hover::after,
+.command-row-entry .kebab-menu:hover::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: -140px;
+    right: 0;
+    height: 12px;
+    background: transparent;
+    z-index: 99;
+}
+
+/* Dropdown positions */
+.command-row .kebab-menu .dropdown-content,
+.command-row-entry .kebab-menu .dropdown-content {
+    top: 100%;
+    right: 0;
+    min-width: 180px;
+    margin-top: 6px;
+}
+
+/* Ensure the button inside the kebab menu fills the container to provide a large touch target (schedules) */
+.command-row .kebab-menu button.icon-btn {
+    width: 100%;
+    height: 100%;
+    background: transparent;
+    border: none;
+    border-radius: 0 5px 5px 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 1.2rem;
+    color: var(--text-secondary);
+    padding: 0;
+    margin: 0;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.command-row .kebab-menu button.icon-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+}

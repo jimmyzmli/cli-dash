@@ -17,7 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional, List
 
-from cli_dash.database import Database
+from cli_dash.database import Database, NOT_SET
 from cli_dash.utils import get_next_cron_run
 
 
@@ -120,7 +120,7 @@ def _seed_schedules(db: Database, schedules_file: str):
         with open(schedules_file, "r") as f:
             entries = json.load(f)
         for s in entries:
-            db.create_schedule(s["label"], s["command"], s["cron"], catch_up=s.get("catch_up", 0))
+            db.create_schedule(s["label"], s["command"], s["cron"], catch_up=s.get("catch_up", 0), queue_name=s.get("queue"))
     except Exception as e:
         logging.error("Error seeding schedules: %s", e)
 
@@ -235,7 +235,7 @@ def terminate_process(pid):
             except OSError:
                 pass
 
-def _recovery_worker(db: Database, job_id: int, pid: int, data_dir: str):
+def _recovery_worker(db: Database, job_id: int, pid: int, data_dir: str, extra_env: Optional[dict] = None):
     """Monitor an orphaned background process and update job status when it finishes."""
     while is_pid_running(pid):
         time.sleep(5)
@@ -251,23 +251,76 @@ def _recovery_worker(db: Database, job_id: int, pid: int, data_dir: str):
     except:
         pass
     db.update_job(job_id, status=status, finished=True)
+    
+    # Trigger next in queue if applicable
+    job = db.get_job(job_id)
+    if job and job.get("queue_name"):
+        trigger_next_in_queue(db, job["queue_name"], data_dir, extra_env)
+
+
+queue_lock = threading.Lock()
+
+
+def trigger_next_in_queue(db: Database, queue_name: str, data_dir: str, extra_env: Optional[dict] = None):
+    """Checks if there's a running job in the queue, and if not, starts the next pending one."""
+    with queue_lock:
+        running = db.get_running_jobs_in_queue(queue_name)
+        if running:
+            return
+        
+        next_job = db.get_next_pending_job_in_queue(queue_name)
+        if next_job:
+            job_id = next_job["id"]
+            command = next_job["command"]
+            job_type = next_job.get("job_type", "command")
+            
+            thread = threading.Thread(
+                target=run_command_task_wrapper,
+                args=(db, job_id, command, data_dir, extra_env, job_type, queue_name),
+                daemon=True,
+            )
+            thread.start()
+
+
+def run_command_task_wrapper(db: Database, job_id: int, command: str, data_dir: str,
+                             extra_env: Optional[dict] = None, job_type: str = 'command',
+                             queue_name: Optional[str] = None):
+    """Wrapper that executes a command and then kicks off the next queued task in finally block."""
+    try:
+        run_command_task(db, job_id, command, data_dir, extra_env, job_type)
+    finally:
+        if queue_name:
+            trigger_next_in_queue(db, queue_name, data_dir, extra_env)
 
 
 def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
-             is_cron=0, job_type='command'):
+             is_cron=0, job_type='command', queue_name=None):
     """Create a job record and start execution in a daemon thread."""
     exec_prefix = os.getenv("WEB_UI_JOB_EXEC")
     if exec_prefix and not command.startswith(f"{exec_prefix} "):
         command = f"{exec_prefix} {command}"
 
-    job_id = db.create_job(command, is_cron=is_cron, job_type=job_type)
-    thread = threading.Thread(
-        target=run_command_task,
-        args=(db, job_id, command, data_dir, extra_env, job_type),
-        daemon=True,
-    )
-    thread.start()
+    job_id = db.create_job(command, is_cron=is_cron, job_type=job_type, queue_name=queue_name)
     broadcaster.publish("jobs", {"action": "created", "job_id": job_id})
+
+    if queue_name:
+        with queue_lock:
+            running = db.get_running_jobs_in_queue(queue_name)
+            if not running:
+                thread = threading.Thread(
+                    target=run_command_task_wrapper,
+                    args=(db, job_id, command, data_dir, extra_env, job_type, queue_name),
+                    daemon=True,
+                )
+                thread.start()
+    else:
+        thread = threading.Thread(
+            target=run_command_task_wrapper,
+            args=(db, job_id, command, data_dir, extra_env, job_type, None),
+            daemon=True,
+        )
+        thread.start()
+        
     return job_id
 
 
@@ -302,7 +355,7 @@ def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
                             continue
 
                         logging.info("Triggering scheduled job: %s", s["label"])
-                        _run_job(db, s["command"], data_dir, extra_env=extra_env, is_cron=1)
+                        _run_job(db, s["command"], data_dir, extra_env=extra_env, is_cron=1, queue_name=s.get("queue_name"))
                         db.update_schedule(s["id"], last_run=now.strftime("%Y-%m-%d %H:%M:%S"))
                         broadcaster.publish("schedules", {"action": "updated", "schedule_id": s["id"]})
                 except Exception as e:
@@ -522,7 +575,8 @@ def create_app(config: AppConfig, db: Database):
     async def create_schedule(request: Request):
         data = await request.json()
         db.create_schedule(data["label"], data["command"], data["cron_expr"],
-                           catch_up=data.get("catch_up", 0))
+                           catch_up=data.get("catch_up", 0),
+                           queue_name=data.get("queue"))
         broadcaster.publish("schedules", {"action": "created"})
         return {"status": "created"}
 
@@ -536,6 +590,7 @@ def create_app(config: AppConfig, db: Database):
             command=data.get("command"),
             cron_expr=data.get("cron_expr"),
             catch_up=data.get("catch_up"),
+            queue_name=data.get("queue") if "queue" in data else NOT_SET
         )
         broadcaster.publish("schedules", {"action": "updated", "schedule_id": schedule_id})
         return {"status": "updated"}
@@ -555,7 +610,8 @@ def create_app(config: AppConfig, db: Database):
                 "label": s["label"],
                 "command": s["command"],
                 "cron": s["cron_expr"],
-                "catch_up": bool(s.get("catch_up", 0))
+                "catch_up": bool(s.get("catch_up", 0)),
+                "queue": s.get("queue_name")
             })
         path = _get_schedules_file_path(config)
         try:
@@ -590,15 +646,16 @@ def create_app(config: AppConfig, db: Database):
         command = data.get("command")
         is_cron = data.get("is_cron", 0)
         job_type = data.get("job_type", "command")
+        queue_name = data.get("queue")
         if not command:
             raise HTTPException(status_code=400, detail="No command provided")
-        job_id = _run_job(db, command, data_dir, extra_env=config.extra_env, is_cron=is_cron, job_type=job_type)
+        job_id = _run_job(db, command, data_dir, extra_env=config.extra_env, is_cron=is_cron, job_type=job_type, queue_name=queue_name)
         return {"job_id": job_id, "status": "pending"}
 
     # --- Extension hook: let consuming projects add custom routes ---
     if config.extra_routes:
-        def _run_job_fn(command, job_type='command'):
-            return _run_job(db, command, data_dir, extra_env=config.extra_env, job_type=job_type)
+        def _run_job_fn(command, job_type='command', queue=None):
+            return _run_job(db, command, data_dir, extra_env=config.extra_env, job_type=job_type, queue_name=queue)
         config.extra_routes(app, db, _run_job_fn)
 
     # Layered static file serving: project files override package defaults
@@ -805,9 +862,18 @@ class DashServer:
             running_jobs = self.db.get_running_jobs()
             if running_jobs:
                 logging.info(f"Found {len(running_jobs)} running/pending jobs to recover.")
+            
+            queues_to_trigger = set()
             for job in running_jobs:
                 job_id = job['id']
                 pid = job.get('pid')
+                q_name = job.get('queue_name')
+                
+                # If the job is pending and belongs to a queue, leave it alone!
+                if job['status'] == 'pending' and q_name:
+                    queues_to_trigger.add(q_name)
+                    continue
+                    
                 if not pid or not is_pid_running(pid):
                     self.db.update_job(job_id, status='failed', finished=True)
                     log_path = os.path.join(self.config.data_dir, "jobs", f"{job_id}.log")
@@ -816,14 +882,21 @@ class DashServer:
                             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             f.write(f"\n[{timestamp}] Job failed (detected process death after server restart)\n")
                     except: pass
+                    if q_name:
+                        queues_to_trigger.add(q_name)
                 else:
                     # Still running! Start recovery monitor
                     t = threading.Thread(
                         target=_recovery_worker,
-                        args=(self.db, job_id, pid, self.config.data_dir),
+                        args=(self.db, job_id, pid, self.config.data_dir, self.config.extra_env),
                         daemon=True
                     )
                     t.start()
+            
+            # Resume queue processing for all queues
+            for q_name in queues_to_trigger:
+                trigger_next_in_queue(self.db, q_name, self.config.data_dir, self.config.extra_env)
+                
         except Exception as e:
             logging.error(f"Error during job recovery: {e}")
 

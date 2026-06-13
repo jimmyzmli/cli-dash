@@ -215,15 +215,15 @@ const App = {
             if (window.innerWidth <= 768) showMonitor.value = false;
         };
 
-        window.runCommand = async (command, label, isCron = 0, jobType = 'command') => {
+        window.runCommand = async (command, label, isCron = 0, jobType = 'command', queue = null) => {
             appConfig.value.header_options?.forEach(opt => {
                 if (headerState[opt.id] && opt.flag && !command.includes(` ${opt.flag}`) && !command.includes(` --${opt.id}`))
                     command += ` ${opt.flag}`;
             });
             try {
-                const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron, job_type: jobType }) });
+                const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron, job_type: jobType, queue }) });
                 const data = await r.json();
-                if (data.job_id) showJob({ id: data.job_id, command: command, job_type: jobType });
+                if (data.job_id) showJob({ id: data.job_id, command: command, job_type: jobType, queue_name: queue });
             } catch (e) { alert('Failed to start command'); }
         };
         
@@ -296,12 +296,20 @@ const CommandsView = {
         const commandCategories = ref([]);
         const customCmd = ref('');
         const presets = ref([]);
+        const queues = ref([]);
         
         const loadCommands = async () => {
             try {
                 const r = await fetch(`/static/config/commands.json?t=${Date.now()}`);
                 if (r.ok) {
-                    commandCategories.value = await r.json();
+                    const data = await r.json();
+                    if (Array.isArray(data)) {
+                        commandCategories.value = data;
+                        queues.value = [];
+                    } else if (data && typeof data === 'object') {
+                        commandCategories.value = data.commands || [];
+                        queues.value = data.queues || [];
+                    }
                     presets.value = [];
                     commandCategories.value.forEach(cat => {
                         if(cat.commands) cat.commands.forEach(c => presets.value.push(c.command));
@@ -322,7 +330,7 @@ const CommandsView = {
             }
         };
 
-        return { commandCategories, customCmd, presets, runCustom, loadCommands, runCommand: window.runCommand };
+        return { commandCategories, customCmd, presets, queues, runCustom, loadCommands, runCommand: window.runCommand };
     }
 };
 
@@ -332,9 +340,9 @@ const ScheduledView = {
         const schedules = ref([]);
         const searchQuery = ref('');
         const showNew = ref(false);
-        const newSched = reactive({ label: '', command: '', cron_expr: '' });
+        const newSched = reactive({ label: '', command: '', cron_expr: '', queue: '' });
         const editingId = ref(null);
-        const editData = reactive({ label: '', command: '', cron_expr: '' });
+        const editData = reactive({ label: '', command: '', cron_expr: '', queue: '' });
 
         const fetchSchedules = async () => {
             try {
@@ -362,7 +370,7 @@ const ScheduledView = {
             if(!newSched.label || !newSched.command || !newSched.cron_expr) { alert('All fields required'); return; }
             await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newSched) });
             showNew.value = false;
-            newSched.label = ''; newSched.command = ''; newSched.cron_expr = '';
+            newSched.label = ''; newSched.command = ''; newSched.cron_expr = ''; newSched.queue = '';
             fetchSchedules();
         };
 
@@ -371,6 +379,7 @@ const ScheduledView = {
             editData.label = s.label;
             editData.command = s.command;
             editData.cron_expr = s.cron_expr;
+            editData.queue = s.queue_name || '';
         };
 
         const saveEdit = async (id) => {
@@ -396,7 +405,7 @@ const ScheduledView = {
             return `${ts} (${rs})`;
         };
 
-        const runSchedule = (s) => window.runCommand(s.command, s.label, 1);
+        const runSchedule = (s) => window.runCommand(s.command, s.label, 1, 'command', s.queue_name);
         const filterHistory = (cmd) => {
             window.dispatchEvent(new CustomEvent('filter-history', { detail: cmd }));
         };

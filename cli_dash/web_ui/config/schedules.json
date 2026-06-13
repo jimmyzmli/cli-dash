@@ -1,1 +1,9 @@
-[]
+[
+    {
+        "label": "Sample Queued Job",
+        "command": "sleep 5",
+        "cron": "*/5 * * * *",
+        "catch_up": false,
+        "queue": "Default"
+    }
+]
