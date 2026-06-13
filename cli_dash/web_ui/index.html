@@ -77,7 +77,11 @@
                             <div class="active-job-wrapper">
                                 <div class="active-job-id">Viewing: {{ activeJobLabel }}</div>
                                 <button class="close-btn" v-if="activeJobId" @click="closeConsole"
-                                    title="Close Console">✕</button>
+                                    title="Close Console">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                                        <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                                    </svg>
+                                </button>
                             </div>
                         </div>
                         <!-- Rclone / custom progress hook -->
@@ -191,7 +195,11 @@
                     </div>
                     <div class="search-wrapper">
                         <input type="text" v-model="searchQuery" placeholder="Search schedules..." style="width:100%">
-                        <button class="clear-btn" v-show="searchQuery" @click="searchQuery = ''" style="display:block">✕</button>
+                        <button class="clear-btn" v-show="searchQuery" @click="searchQuery = ''" style="display:block">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
                 <div class="card form-card" v-if="showNew" style="margin-bottom:20px">
@@ -253,15 +261,25 @@
                 <div class="header-actions">
                     <div class="search-wrapper">
                         <input type="text" v-model="searchQuery" placeholder="Search command...">
-                        <button class="clear-btn" v-show="searchQuery" @click="searchQuery = ''" style="display:block">✕</button>
+                        <button class="clear-btn" v-show="searchQuery" @click="searchQuery = ''" style="display:block">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                            </svg>
+                        </button>
                     </div>
-                    <label class="checkbox-label">
-                        <input type="checkbox" v-model="showCron"> Show Cron
-                    </label>
-                    <button class="icon-btn" @click="resetFilters" title="Reset Filters">↺</button>
+                    <button class="option-toggle" :class="{ active: showCron }" @click="showCron = !showCron" title="Show Cron Jobs">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="18" height="18">
+                            <path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm-5-7h-3v3h3v-3z"/>
+                        </svg>
+                    </button>
+                    <button class="icon-btn" @click="resetFilters" title="Reset Filters">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16">
+                            <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                        </svg>
+                    </button>
                 </div>
             </div>
-            <div class="history-list" style="overflow-y:auto; flex:1">
+            <div class="history-list" style="overflow-y:auto; flex:1" @scroll="onScroll">
                 <div v-for="job in filteredJobs" :key="job.id" class="history-item" :class="{ 'cron-job': job.is_cron }" :title="job.command">
                     <div class="job-info" @click="showJob(job)">
                         <span class="job-time">{{ formatTime(job.created_at) }}</span>
@@ -272,7 +290,11 @@
                     </div>
                     <div class="job-actions">
                         <button class="action-job-btn rerun-btn" @click.stop="runJobAgain(job)" title="Rerun">▶</button>
-                        <button class="action-job-btn delete-btn" @click.stop="deleteJob(job)" title="Delete">✕</button>
+                        <button class="action-job-btn delete-btn" @click.stop="deleteJob(job)" title="Delete">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                                <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
             </div>

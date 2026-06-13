@@ -327,7 +327,10 @@ button.warning:hover {
 }
 
 .history-card {
-    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
     min-height: 0;
 }
 
@@ -335,6 +338,8 @@ button.warning:hover {
     display: flex;
     flex-direction: column;
     gap: 8px;
+    padding: 20px;
+    overflow-y: auto;
 }
 
 .history-item {
@@ -382,11 +387,18 @@ button.warning:hover {
     transition: all 0.2s;
     padding: 2px 8px;
     border-radius: 4px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .action-job-btn.delete-btn:hover {
     color: var(--error-color);
     background: rgba(218, 54, 51, 0.1);
+}
+
+.action-job-btn.rerun-btn {
+    color: var(--accent-color);
 }
 
 .action-job-btn.rerun-btn:hover {
@@ -709,6 +721,9 @@ button.warning:hover {
     padding: 2px 6px;
     border-radius: 4px;
     transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .close-btn:hover {

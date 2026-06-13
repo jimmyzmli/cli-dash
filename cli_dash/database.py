@@ -131,10 +131,10 @@ class Database:
                     continue
                 raise
 
-    def get_jobs(self, limit=50):
+    def get_jobs(self, limit=50, offset=0):
         conn = self._connect()
         c = conn.cursor()
-        c.execute('SELECT * FROM jobs ORDER BY created_at DESC LIMIT ?', (limit,))
+        c.execute('SELECT * FROM jobs ORDER BY created_at DESC LIMIT ? OFFSET ?', (limit, offset))
         jobs = [dict(row) for row in c.fetchall()]
         conn.close()
         return jobs

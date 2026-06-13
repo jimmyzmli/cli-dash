@@ -364,7 +364,8 @@ const App = {
             const icons = {
                 shield: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10zM12 4.1l6 2.25v5.65c0 4.16-5.06 7.42-6 8-1-.58-6-3.84-6-8V6.35l6-2.25z"/></svg>',
                 bolt: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M7 2v11h3v9l7-12h-4l4-8z"/></svg>',
-                sync: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>'
+                sync: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>',
+                info: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></svg>'
             };
             return icons[name] || '';
         };
@@ -566,12 +567,54 @@ const HistoryView = {
         const jobs = ref([]);
         const searchQuery = ref('');
         const showCron = ref(true);
+        const offset = ref(0);
+        const limit = 50;
+        const hasMore = ref(true);
+        const loadingMore = ref(false);
 
-        const fetchJobs = async () => {
+        const fetchJobs = async (append = false) => {
+            if (loadingMore.value) return;
+            loadingMore.value = true;
             try {
-                const r = await fetch('/api/jobs');
-                jobs.value = await r.json();
-            } catch (e) {}
+                const r = await fetch(`/api/jobs?limit=${limit}&offset=${offset.value}`);
+                const data = await r.json();
+                if (data.length < limit) {
+                    hasMore.value = false;
+                }
+                if (append) {
+                    const existingIds = new Set(jobs.value.map(j => j.id));
+                    data.forEach(j => {
+                        if (!existingIds.has(j.id)) {
+                            jobs.value.push(j);
+                        }
+                    });
+                } else {
+                    jobs.value = data;
+                }
+            } catch (e) {
+                console.error('Error fetching jobs:', e);
+            } finally {
+                loadingMore.value = false;
+            }
+        };
+
+        const loadMore = async () => {
+            if (!hasMore.value || loadingMore.value) return;
+            offset.value += limit;
+            await fetchJobs(true);
+        };
+
+        const onScroll = (e) => {
+            const el = e.target;
+            if (el.scrollHeight - el.scrollTop <= el.clientHeight + 50) {
+                loadMore();
+            }
+        };
+
+        const handleRefresh = () => {
+            offset.value = 0;
+            hasMore.value = true;
+            fetchJobs(false);
         };
 
         const handleFilter = (e) => {
@@ -582,12 +625,12 @@ const HistoryView = {
 
         onMounted(() => {
             fetchJobs();
-            window.addEventListener('refresh-history', fetchJobs);
+            window.addEventListener('refresh-history', handleRefresh);
             window.addEventListener('filter-history', handleFilter);
         });
 
         onUnmounted(() => {
-            window.removeEventListener('refresh-history', fetchJobs);
+            window.removeEventListener('refresh-history', handleRefresh);
             window.removeEventListener('filter-history', handleFilter);
         });
 
@@ -604,7 +647,7 @@ const HistoryView = {
             else if(job.status === 'pending') msg = 'Delete this pending job?';
             if(!confirm(msg)) return;
             await fetch(`/api/job/${job.id}`, { method: 'DELETE' });
-            fetchJobs();
+            handleRefresh();
         };
 
         const runJobAgain = (job) => {
@@ -621,7 +664,7 @@ const HistoryView = {
             showMonitor.value = show;
         };
 
-        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, showJob: window.showJobGlobal, getQueueColor: window.getQueueColor };
+        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, showJob: window.showJobGlobal, getQueueColor: window.getQueueColor, onScroll };
     }
 };
 

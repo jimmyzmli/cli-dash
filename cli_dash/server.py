@@ -512,8 +512,8 @@ def create_app(config: AppConfig, db: Database):
     # Jobs API
 
     @app.get("/api/jobs")
-    async def list_jobs():
-        return db.get_jobs()
+    async def list_jobs(limit: int = 50, offset: int = 0):
+        return db.get_jobs(limit=limit, offset=offset)
 
     @app.delete("/api/jobs")
     async def clear_jobs():
