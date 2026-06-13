@@ -95,6 +95,26 @@ def _get_project_web_ui(config: AppConfig):
     return None
 
 
+def _get_help_command(config: AppConfig) -> Optional[str]:
+    """Look up the help_command from project's or package's commands.json."""
+    project_ui = _get_project_web_ui(config)
+    paths = []
+    if project_ui:
+        paths.append(os.path.join(project_ui, "config", "commands.json"))
+    paths.append(os.path.join(_get_package_web_ui(), "config", "commands.json"))
+    
+    for path in paths:
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data.get("help_command")
+            except Exception as e:
+                logging.error(f"Error reading help command from {path}: {e}")
+    return None
+
+
 def _get_schedules_file_path(config: AppConfig) -> str:
     schedules_file = config.schedules_file
     if not schedules_file:
@@ -137,6 +157,13 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
         env["PYTHONIOENCODING"] = "utf-8"
+        sys_exe_dir = os.path.dirname(sys.executable)
+        if sys_exe_dir:
+            path_val = env.get("PATH", "")
+            if path_val:
+                env["PATH"] = sys_exe_dir + os.pathsep + path_val
+            else:
+                env["PATH"] = sys_exe_dir
         if extra_env:
             for k, v in extra_env.items():
                 if v is not None:
@@ -444,6 +471,43 @@ def create_app(config: AppConfig, db: Database):
     async def get_app_config():
         """Return merged app config for the frontend."""
         return {"title": config.title}
+
+    @app.get("/api/help")
+    def get_help():
+        """Run the configured help_command and return its stdout/stderr."""
+        help_cmd = _get_help_command(config)
+        if not help_cmd:
+            return {"content": "No help command configured."}
+        
+        try:
+            env = os.environ.copy()
+            env["PYTHONUNBUFFERED"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
+            sys_exe_dir = os.path.dirname(sys.executable)
+            if sys_exe_dir:
+                path_val = env.get("PATH", "")
+                if path_val:
+                    env["PATH"] = sys_exe_dir + os.pathsep + path_val
+                else:
+                    env["PATH"] = sys_exe_dir
+            if config.extra_env:
+                for k, v in config.extra_env.items():
+                    if v is not None:
+                        env[k] = str(v)
+            
+            res = subprocess.run(
+                help_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                env=env,
+                encoding="utf-8",
+                errors="replace"
+            )
+            output = res.stdout + res.stderr
+            return {"content": output}
+        except Exception as e:
+            return {"content": f"Error running help command: {str(e)}"}
 
     # Jobs API
 

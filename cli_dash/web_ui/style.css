@@ -51,6 +51,38 @@ header {
     gap: 10px;
     padding: 10px 0;
     border-bottom: 1px solid var(--border-color);
+    position: relative;
+    padding-right: 50px;
+}
+
+.help-tab-link {
+    position: absolute;
+    right: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent !important;
+    border: none !important;
+    color: var(--text-secondary);
+    padding: 8px !important;
+    font-size: 1.1rem;
+    cursor: pointer;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    z-index: 10;
+    width: 36px;
+    height: 36px;
+}
+
+.help-tab-link:hover {
+    color: var(--text-primary);
+    background: var(--hover-bg) !important;
+}
+
+.help-tab-link:active {
+    transform: translateY(-50%) scale(0.95);
 }
 
 .tab-link {

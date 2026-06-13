@@ -131,9 +131,15 @@ const App = {
         const handleRoute = () => {
             const path = window.location.pathname;
             if (path.startsWith('/job/')) {
-                const jobId = parseInt(path.split('/')[2]);
-                if (jobId && activeJobId.value !== jobId) {
-                    showJob({ id: jobId, command: 'Job #' + jobId });
+                const parts = path.split('/');
+                const jobId = parts[2];
+                if (jobId === 'help') {
+                    showHelpConsole();
+                } else {
+                    const parsedId = parseInt(jobId);
+                    if (parsedId && activeJobId.value !== parsedId) {
+                        showJob({ id: parsedId, command: 'Job #' + parsedId });
+                    }
                 }
             }
             handleHash();
@@ -204,6 +210,31 @@ const App = {
                     if(con) con.scrollTop = con.scrollHeight;
                 });
             } catch (e) { console.error('Error showing job:', e); }
+        };
+
+        const showHelpConsole = async () => {
+            if (window.location.pathname !== `/job/help`) window.history.pushState({}, '', `/job/help`);
+            activeJobId.value = 'help';
+            activeJobLabel.value = 'Help / Documentation';
+            activeJob.value = { id: 'help', command: 'Help' };
+            consoleContent.value = 'Loading help documentation...';
+            if (window.innerWidth <= 768) showMonitor.value = true;
+            
+            try {
+                const r = await fetch('/api/help');
+                if (r.ok) {
+                    const data = await r.json();
+                    consoleContent.value = data.content || 'No help documentation returned.';
+                } else {
+                    consoleContent.value = 'Failed to load help documentation.';
+                }
+                nextTick(() => {
+                    const con = document.getElementById('console');
+                    if(con) con.scrollTop = 0; // Scroll to top for documentation
+                });
+            } catch (e) {
+                consoleContent.value = 'Error loading help documentation: ' + e;
+            }
         };
 
         const closeConsole = () => {
@@ -283,7 +314,7 @@ const App = {
             appConfig, connected, headerState, allHeaderOptions, saveHeaderState,
             tabs, currentTab, switchTab, activeTabComponent, monitorHidden,
             showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
-            activeJobId, activeJobLabel, activeJob, consoleContent, closeConsole,
+            activeJobId, activeJobLabel, activeJob, consoleContent, closeConsole, showHelpConsole,
             modal, closeModal, logComponent
         };
     }
