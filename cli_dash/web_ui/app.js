@@ -651,8 +651,7 @@ const HistoryView = {
         };
 
         const runJobAgain = (job) => {
-            const runCmdEsc = job.command.replace(/'/g, "\\'").replace(/"/g, '&quot;');
-            window.runCommand(job.command, 'Rerun', job.is_cron ? 1 : 0, job.job_type);
+            window.runCommand(job.command, 'Rerun', job.is_cron ? 1 : 0, job.job_type, job.queue_name);
         };
 
         const formatTime = (ts) => {
