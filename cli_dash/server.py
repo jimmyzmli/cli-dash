@@ -470,7 +470,27 @@ def create_app(config: AppConfig, db: Database):
     @app.get("/api/config")
     async def get_app_config():
         """Return merged app config for the frontend."""
-        return {"title": config.title}
+        mcp_servers = []
+        if config.web_ui_dir:
+            mcp_config_path = os.path.join(config.web_ui_dir, "config", "mcp.json")
+            if os.path.exists(mcp_config_path):
+                try:
+                    with open(mcp_config_path, "r") as f:
+                        mcp_config = json.load(f)
+                        if isinstance(mcp_config, dict):
+                            mcp_config = [mcp_config]
+                        for srv in mcp_config:
+                            if srv.get("enabled", True):
+                                mcp_servers.append({
+                                    "name": srv.get("name", "MCP"),
+                                    "port": srv.get("port", 9991)
+                                })
+                except Exception:
+                    pass
+        return {
+            "title": config.title,
+            "mcp_servers": mcp_servers
+        }
 
     @app.get("/api/help")
     def get_help():

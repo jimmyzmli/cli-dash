@@ -39,6 +39,10 @@
                         <span v-if="opt.label" class="toggle-label">{{ opt.label }}</span>
                     </div>
                 </div>
+                <div class="status-indicator" v-for="srv in mcpServers" :key="srv.name" :title="'Port: ' + srv.port">
+                    <span class="status-dot" style="background-color: var(--success-color); box-shadow: 0 0 8px var(--success-color)"></span>
+                    <span>{{ srv.name }}</span>
+                </div>
                 <div class="status-indicator">
                     <span id="server-status" class="status-dot"
                         :style="{ backgroundColor: connected ? 'var(--success-color)' : 'var(--error-color)', boxShadow: connected ? '0 0 8px var(--success-color)' : '0 0 8px var(--error-color)' }"></span>

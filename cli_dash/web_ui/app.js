@@ -56,6 +56,7 @@ const App = {
         const connected = ref(false);
         const headerState = reactive({});
         const allHeaderOptions = ref([]);
+        const mcpServers = ref([]);
 
         const currentTab = ref('commands');
         const tabs = ref([]);
@@ -309,7 +310,7 @@ const App = {
         onMounted(async () => {
             // Load app config
             try { const r = await fetch('/static/config/app.json'); if (r.ok) appConfig.value = await r.json(); } catch(e){}
-            try { const r = await fetch('/api/config'); if (r.ok) { const d = await r.json(); if(d.title) document.title = d.title; } } catch(e){}
+            try { const r = await fetch('/api/config'); if (r.ok) { const d = await r.json(); if(d.title) document.title = d.title; if(d.mcp_servers) mcpServers.value = d.mcp_servers; } } catch(e){}
             try {
                 const r = await fetch(`/static/config/commands.json?t=${Date.now()}`);
                 if (r.ok) {
@@ -376,7 +377,7 @@ const App = {
         };
 
         return {
-            appConfig, connected, headerState, allHeaderOptions, saveHeaderState,
+            appConfig, mcpServers, connected, headerState, allHeaderOptions, saveHeaderState,
             tabs, currentTab, switchTab, activeTabComponent, monitorHidden,
             showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
             activeJobId, activeJobLabel, activeJob, consoleContent, closeConsole, showHelpConsole,
