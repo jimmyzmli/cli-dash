@@ -324,7 +324,8 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
              is_cron=0, job_type='command', queue_name=None):
     """Create a job record and start execution in a daemon thread."""
     exec_prefix = os.getenv("WEB_UI_JOB_EXEC")
-    if exec_prefix and not command.startswith(f"{exec_prefix} "):
+    bypass_prefixes = ("/", "./", "cd ", "sh ", "bash ", "zsh ", "source ")
+    if exec_prefix and not command.startswith(f"{exec_prefix} ") and not command.startswith(bypass_prefixes):
         command = f"{exec_prefix} {command}"
 
     job_id = db.create_job(command, is_cron=is_cron, job_type=job_type, queue_name=queue_name)
