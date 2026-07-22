@@ -39,7 +39,7 @@
                         <span v-if="opt.label" class="toggle-label">{{ opt.label }}</span>
                     </div>
                 </div>
-                <div class="status-indicator" v-for="srv in mcpServers" :key="srv.name" :title="'Port: ' + srv.port">
+                <div class="status-indicator" v-for="srv in mcpServers" :key="srv.name" :title="'Port: ' + srv.port + (srv.pid ? ' | PID: ' + srv.pid : '')">
                     <span class="status-dot" style="background-color: var(--success-color); box-shadow: 0 0 8px var(--success-color)"></span>
                     <span>{{ srv.name }}</span>
                 </div>

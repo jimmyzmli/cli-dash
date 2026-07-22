@@ -482,9 +482,27 @@ def create_app(config: AppConfig, db: Database):
                             mcp_config = [mcp_config]
                         for srv in mcp_config:
                             if srv.get("enabled", True):
+                                pid = None
+                                try:
+                                    import subprocess
+                                    cmd = srv.get("command", "")
+                                    args_list = srv.get("args", [])
+                                    args_list = [os.path.expanduser(a) if a.startswith("~") else a for a in args_list]
+                                    args = " ".join(args_list)
+                                    full_cmd = f"{cmd} {args}".strip()
+                                    if full_cmd:
+                                        res = subprocess.run(["pgrep", "-P", str(os.getpid()), "-f", full_cmd], capture_output=True, text=True)
+                                        if res.returncode == 0 and res.stdout.strip():
+                                            pids = res.stdout.strip().split('\n')
+                                            if pids:
+                                                pid = pids[0]
+                                except Exception:
+                                    pass
+                                
                                 mcp_servers.append({
                                     "name": srv.get("name", "MCP"),
-                                    "port": srv.get("port", 9991)
+                                    "port": srv.get("port", 9991),
+                                    "pid": pid
                                 })
                 except Exception:
                     pass
