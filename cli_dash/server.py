@@ -394,6 +394,66 @@ def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
         time.sleep(60)
 
 
+def _service_manager_loop(services_config_path: str, log_dir: str):
+    """Spawns and monitors long-running child processes defined in services.json."""
+    import subprocess
+    import time
+    
+    processes = {}
+    
+    while True:
+        if os.path.exists(services_config_path):
+            try:
+                with open(services_config_path, "r") as f:
+                    config_data = json.load(f)
+                    if isinstance(config_data, dict):
+                        services = [config_data]
+                    else:
+                        services = config_data
+                        
+                for srv in services:
+                    if not srv.get("enabled", True):
+                        continue
+                        
+                    name = srv.get("name", "Unknown")
+                    cmd = srv.get("command", "")
+                    if not cmd:
+                        continue
+                    args_list = srv.get("args", [])
+                    args_list = [os.path.expanduser(a) if isinstance(a, str) and a.startswith("~") else str(a) for a in args_list]
+                    
+                    full_cmd = [cmd] + args_list
+                    
+                    proc = processes.get(name)
+                    if proc is None or proc.poll() is not None:
+                        if proc is not None:
+                            logging.warning(f"Service '{name}' exited with code {proc.returncode}. Restarting...")
+                        else:
+                            logging.info(f"Starting service '{name}'...")
+                        
+                        env = os.environ.copy()
+                        if "env" in srv:
+                            env.update(srv["env"])
+                            
+                        log_path = os.path.join(log_dir, f"service-{name}.log")
+                        out_file = open(log_path, "a")
+                        
+                        try:
+                            processes[name] = subprocess.Popen(
+                                full_cmd,
+                                env=env,
+                                stdout=out_file,
+                                stderr=subprocess.STDOUT
+                            )
+                            logging.info(f"Service '{name}' started (PID {processes[name].pid}).")
+                        except Exception as e:
+                            logging.error(f"Failed to start service '{name}': {e}")
+            except Exception as e:
+                logging.error(f"Error reading {services_config_path} for service manager: {e}")
+        
+        time.sleep(5)
+
+
 def create_app(config: AppConfig, db: Database):
     """
     Build and return a FastAPI application with all core routes.
@@ -473,10 +533,10 @@ def create_app(config: AppConfig, db: Database):
         """Return merged app config for the frontend."""
         mcp_servers = []
         if config.web_ui_dir:
-            mcp_config_path = os.path.join(config.web_ui_dir, "config", "mcp.json")
-            if os.path.exists(mcp_config_path):
+            services_config_path = os.path.join(config.web_ui_dir, "config", "services.json")
+            if os.path.exists(services_config_path):
                 try:
-                    with open(mcp_config_path, "r") as f:
+                    with open(services_config_path, "r") as f:
                         mcp_config = json.load(f)
                         if isinstance(mcp_config, dict):
                             mcp_config = [mcp_config]
@@ -789,83 +849,6 @@ def create_app(config: AppConfig, db: Database):
     return app
 
 
-def create_mcp_app(mcp_config, host="127.0.0.1"):
-    from fastapi import FastAPI, HTTPException
-    from pydantic import BaseModel
-    from contextlib import AsyncExitStack, asynccontextmanager
-    
-    try:
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-    except ImportError:
-        logging.error("mcp package is not installed. Run 'pip install mcp'")
-        return None
-
-    class MCPRequest(BaseModel):
-        tool_name: str = "actual_execute"
-        arguments: dict
-
-    @asynccontextmanager
-    async def mcp_lifespan(app: FastAPI):
-        logging.info(f"Starting persistent MCP server on port {mcp_config.get('port', 9991)}...")
-        app.state.mcp_exit_stack = AsyncExitStack()
-        
-        command = mcp_config.get("command", "node")
-        args = mcp_config.get("args", [])
-        args = [os.path.expanduser(arg) if arg.startswith("~") else arg for arg in args]
-        
-        env = os.environ.copy()
-        if "env" in mcp_config:
-            env.update(mcp_config["env"])
-            
-        server_params = StdioServerParameters(
-            command=command,
-            args=args,
-            env=env
-        )
-        
-        try:
-            ctx = stdio_client(server_params)
-            read, write = await app.state.mcp_exit_stack.enter_async_context(ctx)
-            
-            session_ctx = ClientSession(read, write)
-            session = await app.state.mcp_exit_stack.enter_async_context(session_ctx)
-            
-            await session.initialize()
-            app.state.mcp_session = session
-            logging.info("Persistent MCP server initialized successfully.")
-        except Exception as e:
-            logging.error(f"Failed to start persistent MCP server: {e}")
-            await app.state.mcp_exit_stack.aclose()
-            raise e
-            
-        yield
-        
-        logging.info("Shutting down persistent MCP server...")
-        if hasattr(app.state, "mcp_exit_stack"):
-            await app.state.mcp_exit_stack.aclose()
-
-    mcp_app = FastAPI(lifespan=mcp_lifespan, title="MCP Proxy")
-
-    @mcp_app.post("/api/mcp/execute")
-    async def mcp_execute(req: MCPRequest):
-        if not hasattr(mcp_app.state, "mcp_session"):
-            raise HTTPException(status_code=503, detail="MCP session not initialized")
-            
-        session: ClientSession = mcp_app.state.mcp_session
-        try:
-            res = await session.call_tool(req.tool_name, arguments=req.arguments)
-            if res.isError:
-                raise HTTPException(status_code=400, detail=res.content[0].text)
-            return {"stdout": res.content[0].text}
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
-            
-    return mcp_app
-
-
 class DashServer:
     """
     Manages the server lifecycle: start (daemonize), stop, restart, db init.
@@ -1091,28 +1074,16 @@ class DashServer:
         # Build FastAPI app
         app = create_app(self.config, self.db)
 
-        # Setup MCP Proxy if configured
-        mcp_config_path = None
+        # Start service manager thread
         if self.config.web_ui_dir:
-            mcp_config_path = os.path.join(self.config.web_ui_dir, "config", "mcp.json")
-            
-        if mcp_config_path and os.path.exists(mcp_config_path):
-            try:
-                with open(mcp_config_path, "r") as f:
-                    mcp_config = json.load(f)
-                
-                if mcp_config.get("enabled", True):
-                    def start_mcp_proxy():
-                        import uvicorn
-                        mcp_app = create_mcp_app(mcp_config, host=self.config.host)
-                        if mcp_app:
-                            uvicorn.run(mcp_app, host=self.config.host, port=mcp_config.get("port", 9991), log_level="warning")
-                    
-                    mcp_thread = threading.Thread(target=start_mcp_proxy, daemon=True)
-                    mcp_thread.start()
-                    logging.info("MCP proxy thread started.")
-            except Exception as e:
-                logging.error(f"Error loading MCP config from {mcp_config_path}: {e}")
+            services_config_path = os.path.join(self.config.web_ui_dir, "config", "services.json")
+            if os.path.exists(services_config_path):
+                svc_thread = threading.Thread(
+                    target=_service_manager_loop,
+                    args=(services_config_path, self.config.log_dir),
+                    daemon=True,
+                )
+                svc_thread.start()
 
         # Start scheduler thread
         sched_thread = threading.Thread(
@@ -1186,11 +1157,17 @@ class DashServer:
                     creationflags=0x08000000
                 )
             else:
-                os.kill(pid, signal.SIGTERM)
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except AttributeError:
+                    os.kill(pid, signal.SIGTERM)
                 time.sleep(1)
                 if self.is_running():
                     print(f"{RED}Force killing...{RESET}")
-                    os.kill(pid, signal.SIGKILL)
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except AttributeError:
+                        os.kill(pid, signal.SIGKILL)
 
             if os.path.exists(self.pid_file):
                 os.remove(self.pid_file)
