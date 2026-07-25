@@ -4,6 +4,38 @@ const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick, ma
 
 window.dashExtensions = { tabs: [], headerOptions: [], onInit: [] };
 
+window.showToast = function(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    if (!container) {
+        alert(message);
+        return;
+    }
+    
+    const toast = document.createElement('div');
+    toast.className = `toast toast-${type}`;
+    
+    let icon = '';
+    if (type === 'success') icon = '✓';
+    else if (type === 'error') icon = '⚠';
+    else if (type === 'warning') icon = '⚠';
+    else icon = 'ℹ';
+    
+    toast.innerHTML = `<span class="toast-icon">${icon}</span><span class="toast-message">${message}</span>`;
+    
+    container.appendChild(toast);
+    
+    // Trigger reflow for transition
+    void toast.offsetWidth;
+    toast.classList.add('show');
+    
+    setTimeout(() => {
+        toast.classList.remove('show');
+        toast.addEventListener('transitionend', () => {
+            if (toast.parentNode) toast.parentNode.removeChild(toast);
+        });
+    }, 3000);
+};
+
 window.registerTab = function(tab) { window.dashExtensions.tabs.push(tab); }
 window.registerHeaderOption = function(opt) { window.dashExtensions.headerOptions.push(opt); }
 
@@ -300,16 +332,16 @@ const App = {
             if (window.innerWidth <= 768) showMonitor.value = false;
         };
 
-        window.runCommand = async (command, label, isCron = 0, jobType = 'command', queue = null) => {
+        window.runCommand = async (command, label, isCron = 0, jobType = 'command', queue = null, env = null, job_exec = null) => {
             appConfig.value.header_options?.forEach(opt => {
                 if (headerState[opt.id] && opt.flag && !command.includes(` ${opt.flag}`) && !command.includes(` --${opt.id}`))
                     command += ` ${opt.flag}`;
             });
             try {
-                const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron, job_type: jobType, queue }) });
+                const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron, job_type: jobType, queue, env, job_exec }) });
                 const data = await r.json();
-                if (data.job_id) showJob({ id: data.job_id, command: command, job_type: jobType, queue_name: queue });
-            } catch (e) { alert('Failed to start command'); }
+                if (data.job_id) showJob({ id: data.job_id, command: command, job_type: jobType, queue_name: queue, env, job_exec });
+            } catch (e) { window.showToast('Failed to start command', 'error'); }
         };
         
         window.showJobGlobal = showJob;
@@ -387,12 +419,26 @@ const App = {
             saveHeaderState(id);
         };
 
+        const restartService = async (name) => {
+            try {
+                const r = await fetch(`/api/services/${encodeURIComponent(name)}/restart`, { method: 'POST' });
+                if (r.ok) {
+                    window.showToast(`Service '${name}' is restarting...`, 'info');
+                } else {
+                    const data = await r.json().catch(() => ({}));
+                    window.showToast(`Failed to restart service '${name}': ${data.detail || 'Unknown error'}`, 'error');
+                }
+            } catch(e) {
+                window.showToast(`Error restarting service: ${e}`, 'error');
+            }
+        };
+
         return {
             appConfig, mcpServers, connected, headerState, allHeaderOptions, saveHeaderState,
             tabs, currentTab, switchTab, activeTabComponent, monitorHidden,
             showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
             activeJobId, activeJobLabel, activeJob, consoleContent, formattedConsoleContent, closeConsole, showHelpConsole,
-            modal, closeModal, logComponent, getOptionIcon, toggleHeaderOption
+            modal, closeModal, logComponent, getOptionIcon, toggleHeaderOption, restartService
         };
     }
 };
@@ -492,7 +538,7 @@ const ScheduledView = {
         });
 
         const saveNew = async () => {
-            if(!newSched.label || !newSched.command || !newSched.cron_expr) { alert('All fields required'); return; }
+            if(!newSched.label || !newSched.command || !newSched.cron_expr) { window.showToast('All fields required', 'warning'); return; }
             await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newSched) });
             showNew.value = false;
             newSched.label = ''; newSched.command = ''; newSched.cron_expr = ''; newSched.queue = '';
@@ -540,12 +586,12 @@ const ScheduledView = {
                 const r = await fetch('/api/schedules/export', { method: 'POST' });
                 if (r.ok) {
                     const data = await r.json();
-                    alert(`Exported successfully to ${data.path}`);
+                    window.showToast(`Exported successfully to ${data.path}`, 'success');
                 } else {
-                    alert('Failed to export schedules');
+                    window.showToast('Failed to export schedules', 'error');
                 }
             } catch (e) {
-                alert('Error exporting schedules');
+                window.showToast('Error exporting schedules', 'error');
             }
         };
 
@@ -554,14 +600,14 @@ const ScheduledView = {
             try {
                 const r = await fetch('/api/schedules/import', { method: 'POST' });
                 if (r.ok) {
-                    alert('Imported successfully');
+                    window.showToast('Imported successfully', 'success');
                     fetchSchedules();
                 } else {
                     const err = await r.json();
-                    alert('Failed to import: ' + (err.detail || 'Unknown error'));
+                    window.showToast('Failed to import: ' + (err.detail || 'Unknown error'), 'error');
                 }
             } catch (e) {
-                alert('Error importing schedules');
+                window.showToast('Error importing schedules', 'error');
             }
         };
 
@@ -663,7 +709,9 @@ const HistoryView = {
         };
 
         const runJobAgain = (job) => {
-            window.runCommand(job.command, 'Rerun', job.is_cron ? 1 : 0, job.job_type, job.queue_name);
+            let env = job.env;
+            if (typeof env === 'string') try { env = JSON.parse(env); } catch(e){}
+            window.runCommand(job.command, 'Rerun', job.is_cron ? 1 : 0, job.job_type, job.queue_name, env, job.job_exec);
         };
 
         const formatTime = (ts) => {

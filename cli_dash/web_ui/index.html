@@ -24,29 +24,40 @@
 
 <body>
     <div id="app" class="app-container" v-cloak>
-        <header>
-            <div class="logo">
-                <span class="icon" id="app-icon">{{ appConfig.icon || '⚡' }}</span>
-                <h1 id="app-title">{{ appConfig.title || 'Control Center' }}</h1>
-            </div>
-            <div class="header-actions">
-                <div id="header-options">
-                    <div class="option-toggle" v-for="opt in allHeaderOptions" :key="opt.id"
-                        :class="{ active: headerState[opt.id] }"
-                        @click="toggleHeaderOption(opt.id)"
-                        :title="opt.alt || opt.label || ''">
-                        <span v-if="opt.icon && getOptionIcon(opt.icon)" v-html="getOptionIcon(opt.icon)"></span>
-                        <span v-if="opt.label" class="toggle-label">{{ opt.label }}</span>
+        <header style="flex-direction: column; align-items: stretch; gap: 10px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="logo">
+                    <span class="icon" id="app-icon">{{ appConfig.icon || '⚡' }}</span>
+                    <h1 id="app-title">{{ appConfig.title || 'Control Center' }}</h1>
+                </div>
+                <div style="display: flex; justify-content: flex-end; align-items: center; gap: 15px;">
+                    <div class="status-indicator" v-for="srv in mcpServers" :key="srv.name" :title="'Port: ' + srv.port + (srv.pid ? ' | PID: ' + srv.pid : '')">
+                        <span class="status-dot" style="background-color: var(--success-color); box-shadow: 0 0 8px var(--success-color)"></span>
+                        <span>{{ srv.name }}</span>
+                        <button class="icon-btn" @click="restartService(srv.name)" title="Restart Service" style="margin-left: 5px; cursor: pointer; padding: 2px;">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                                <path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <div class="status-indicator">
+                        <span id="server-status" class="status-dot"
+                            :style="{ backgroundColor: connected ? 'var(--success-color)' : 'var(--error-color)', boxShadow: connected ? '0 0 8px var(--success-color)' : '0 0 8px var(--error-color)' }"></span>
+                        <span id="status-text">{{ connected ? 'Connected' : 'Disconnected' }}</span>
                     </div>
                 </div>
-                <div class="status-indicator" v-for="srv in mcpServers" :key="srv.name" :title="'Port: ' + srv.port + (srv.pid ? ' | PID: ' + srv.pid : '')">
-                    <span class="status-dot" style="background-color: var(--success-color); box-shadow: 0 0 8px var(--success-color)"></span>
-                    <span>{{ srv.name }}</span>
-                </div>
-                <div class="status-indicator">
-                    <span id="server-status" class="status-dot"
-                        :style="{ backgroundColor: connected ? 'var(--success-color)' : 'var(--error-color)', boxShadow: connected ? '0 0 8px var(--success-color)' : '0 0 8px var(--error-color)' }"></span>
-                    <span id="status-text">{{ connected ? 'Connected' : 'Disconnected' }}</span>
+            </div>
+            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 15px;">
+                <div class="header-actions">
+                    <div id="header-options">
+                        <div class="option-toggle" v-for="opt in allHeaderOptions" :key="opt.id"
+                            :class="{ active: headerState[opt.id] }"
+                            @click="toggleHeaderOption(opt.id)"
+                            :title="opt.alt || opt.label || ''">
+                            <span v-if="opt.icon && getOptionIcon(opt.icon)" v-html="getOptionIcon(opt.icon)"></span>
+                            <span v-if="opt.label" class="toggle-label">{{ opt.label }}</span>
+                        </div>
+                    </div>
                 </div>
             </div>
         </header>
@@ -107,6 +118,9 @@
             </section>
         </main>
 
+        <!-- Toast Container -->
+        <div id="toast-container" class="toast-container"></div>
+
         <!-- Modals -->
         <div id="modal-overlay" class="modal-overlay" v-show="modal.show" @click="closeModal">
             <div class="modal card" @click.stop>
@@ -128,11 +142,11 @@
                             <div v-for="cmd in cat.commands" :key="cmd.command" class="command-row-entry" @click="filterHistory(cmd.command)">
                                 <span class="command-label" :title="cmd.command">{{ cmd.label }}</span>
                                 <div class="command-actions" @click.stop>
-                                    <button class="action-btn play-btn" @click="runCommand(cmd.command, cmd.description || cmd.label)" title="Run without queue">▶</button>
+                                    <button class="action-btn play-btn" @click="runCommand(cmd.command, cmd.description || cmd.label, 0, 'command', null, cmd.env, cmd.job_exec)" title="Run without queue">▶</button>
                                     <div class="kebab-menu" v-if="normalizedQueues.length">
                                         <button class="icon-btn">⋮</button>
                                         <div class="dropdown-content">
-                                            <div class="dropdown-item" v-for="q in normalizedQueues" :key="q.name" @click="runCommand(cmd.command, cmd.description || cmd.label, 0, 'command', q.name)">
+                                            <div class="dropdown-item" v-for="q in normalizedQueues" :key="q.name" @click="runCommand(cmd.command, cmd.description || cmd.label, 0, 'command', q.name, cmd.env, cmd.job_exec)">
                                                 Add to <span :style="{ color: q.color, fontWeight: 'bold' }">{{ q.name }}</span> Queue
                                             </div>
                                         </div>
@@ -146,11 +160,11 @@
                         <div class="command-row-entry" @click="filterHistory(cat.command)">
                             <span class="command-label" :title="cat.command">{{ cat.label }}</span>
                             <div class="command-actions" @click.stop>
-                                <button class="action-btn play-btn" @click="runCommand(cat.command, cat.label)" title="Run without queue">▶</button>
+                                <button class="action-btn play-btn" @click="runCommand(cat.command, cat.label, 0, 'command', null, cat.env, cat.job_exec)" title="Run without queue">▶</button>
                                 <div class="kebab-menu" v-if="normalizedQueues.length">
                                     <button class="icon-btn">⋮</button>
                                     <div class="dropdown-content">
-                                        <div class="dropdown-item" v-for="q in normalizedQueues" :key="q.name" @click="runCommand(cat.command, cat.label, 0, 'command', q.name)">
+                                        <div class="dropdown-item" v-for="q in normalizedQueues" :key="q.name" @click="runCommand(cat.command, cat.label, 0, 'command', q.name, cat.env, cat.job_exec)">
                                             Add to <span :style="{ color: q.color, fontWeight: 'bold' }">{{ q.name }}</span> Queue
                                         </div>
                                     </div>

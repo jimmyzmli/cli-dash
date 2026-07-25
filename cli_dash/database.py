@@ -38,7 +38,9 @@ class Database:
                 job_type TEXT DEFAULT 'command',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 finished_at TIMESTAMP,
-                queue_name TEXT
+                queue_name TEXT,
+                env TEXT,
+                job_exec TEXT
             )
         ''')
         c.execute('''
@@ -51,7 +53,9 @@ class Database:
                 last_run TIMESTAMP,
                 next_run TIMESTAMP,
                 catch_up INTEGER DEFAULT 0,
-                queue_name TEXT
+                queue_name TEXT,
+                env TEXT,
+                job_exec TEXT
             )
         ''')
 
@@ -61,8 +65,12 @@ class Database:
             ("job_type", "jobs", "'command'"),
             ("output", "jobs", None),
             ("queue_name", "jobs", "NULL"),
+            ("env", "jobs", "NULL"),
+            ("job_exec", "jobs", "NULL"),
             ("catch_up", "schedules", "0"),
             ("queue_name", "schedules", "NULL"),
+            ("env", "schedules", "NULL"),
+            ("job_exec", "schedules", "NULL"),
         ]:
             try:
                 if default == "NULL":
@@ -90,14 +98,17 @@ class Database:
 
     # --- Job CRUD ---
 
-    def create_job(self, command, is_cron=0, job_type='command', queue_name=None):
+    def create_job(self, command, is_cron=0, job_type='command', queue_name=None, env=None, job_exec=None):
+        import json
+        env_str = json.dumps(env) if env else None
+        
         for _ in range(5):
             try:
                 conn = self._connect()
                 c = conn.cursor()
                 c.execute(
-                    'INSERT INTO jobs (command, status, is_cron, job_type, queue_name) VALUES (?, ?, ?, ?, ?)',
-                    (command, 'pending', is_cron, job_type, queue_name),
+                    'INSERT INTO jobs (command, status, is_cron, job_type, queue_name, env, job_exec) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    (command, 'pending', is_cron, job_type, queue_name, env_str, job_exec),
                 )
                 job_id = c.lastrowid
                 conn.commit()
@@ -195,18 +206,21 @@ class Database:
         conn.close()
         return rows
 
-    def create_schedule(self, label, command, cron_expr, catch_up=0, queue_name=None):
+    def create_schedule(self, label, command, cron_expr, catch_up=0, queue_name=None, env=None, job_exec=None):
+        import json
+        env_str = json.dumps(env) if env else None
         conn = self._connect()
         c = conn.cursor()
         c.execute(
-            'INSERT INTO schedules (label, command, cron_expr, catch_up, queue_name) VALUES (?, ?, ?, ?, ?)',
-            (label, command, cron_expr, 1 if catch_up else 0, queue_name),
+            'INSERT INTO schedules (label, command, cron_expr, catch_up, queue_name, env, job_exec) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (label, command, cron_expr, 1 if catch_up else 0, queue_name, env_str, job_exec),
         )
         conn.commit()
         conn.close()
 
     def update_schedule(self, schedule_id, label=None, command=None, cron_expr=None,
-                        enabled=None, last_run=None, next_run=None, catch_up=None, queue_name=NOT_SET):
+                        enabled=None, last_run=None, next_run=None, catch_up=None, queue_name=NOT_SET, env=NOT_SET, job_exec=NOT_SET):
+        import json
         conn = self._connect()
         c = conn.cursor()
         if label is not None:
@@ -225,6 +239,10 @@ class Database:
             c.execute('UPDATE schedules SET catch_up = ? WHERE id = ?', (1 if catch_up else 0, schedule_id))
         if queue_name is not NOT_SET:
             c.execute('UPDATE schedules SET queue_name = ? WHERE id = ?', (queue_name, schedule_id))
+        if env is not NOT_SET:
+            c.execute('UPDATE schedules SET env = ? WHERE id = ?', (json.dumps(env) if env else None, schedule_id))
+        if job_exec is not NOT_SET:
+            c.execute('UPDATE schedules SET job_exec = ? WHERE id = ?', (job_exec, schedule_id))
         conn.commit()
         conn.close()
 

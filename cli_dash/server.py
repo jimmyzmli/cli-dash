@@ -95,6 +95,24 @@ def _get_project_web_ui(config: AppConfig):
     return None
 
 
+def _parse_services_config(config_data):
+    """Normalize services configuration to a list of dicts."""
+    if isinstance(config_data, list):
+        return config_data
+    elif isinstance(config_data, dict):
+        if "command" in config_data:
+            return [config_data]
+        else:
+            services = []
+            for k, v in config_data.items():
+                if isinstance(v, dict):
+                    if "name" not in v:
+                        v["name"] = k
+                    services.append(v)
+            return services
+    return []
+
+
 def _get_help_command(config: AppConfig) -> Optional[str]:
     """Look up the help_command from project's or package's commands.json."""
     project_ui = _get_project_web_ui(config)
@@ -138,9 +156,12 @@ def _seed_schedules(db: Database, schedules_file: str):
     logging.info("Seeding schedules from %s...", schedules_file)
     try:
         with open(schedules_file, "r") as f:
-            entries = json.load(f)
-        for s in entries:
-            db.create_schedule(s["label"], s["command"], s["cron"], catch_up=s.get("catch_up", 0), queue_name=s.get("queue"))
+            schedules = json.load(f)
+            for s in schedules:
+                if "label" in s and "command" in s and "cron" in s:
+                    db.create_schedule(s["label"], s["command"], s["cron"],
+                                       catch_up=s.get("catch_up", 0), queue_name=s.get("queue"),
+                                       env=s.get("env"), job_exec=s.get("job_exec"))
     except Exception as e:
         logging.error("Error seeding schedules: %s", e)
 
@@ -321,14 +342,20 @@ def run_command_task_wrapper(db: Database, job_id: int, command: str, data_dir: 
 
 
 def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
-             is_cron=0, job_type='command', queue_name=None):
+             is_cron=0, job_type='command', queue_name=None, cmd_env=None, job_exec=None):
     """Create a job record and start execution in a daemon thread."""
-    exec_prefix = os.getenv("WEB_UI_JOB_EXEC")
+    exec_prefix = job_exec if job_exec is not None else os.getenv("WEB_UI_JOB_EXEC")
     bypass_prefixes = ("/", "./", "cd ", "sh ", "bash ", "zsh ", "source ")
     if exec_prefix and not command.startswith(f"{exec_prefix} ") and not command.startswith(bypass_prefixes):
         command = f"{exec_prefix} {command}"
 
-    job_id = db.create_job(command, is_cron=is_cron, job_type=job_type, queue_name=queue_name)
+    final_env = {}
+    if extra_env:
+        final_env.update(extra_env)
+    if cmd_env:
+        final_env.update(cmd_env)
+
+    job_id = db.create_job(command, is_cron=is_cron, job_type=job_type, queue_name=queue_name, env=cmd_env, job_exec=job_exec)
     broadcaster.publish("jobs", {"action": "created", "job_id": job_id})
 
     if queue_name:
@@ -337,14 +364,14 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
             if not running:
                 thread = threading.Thread(
                     target=run_command_task_wrapper,
-                    args=(db, job_id, command, data_dir, extra_env, job_type, queue_name),
+                    args=(db, job_id, command, data_dir, final_env, job_type, queue_name),
                     daemon=True,
                 )
                 thread.start()
     else:
         thread = threading.Thread(
             target=run_command_task_wrapper,
-            args=(db, job_id, command, data_dir, extra_env, job_type, None),
+            args=(db, job_id, command, data_dir, final_env, job_type, None),
             daemon=True,
         )
         thread.start()
@@ -383,7 +410,9 @@ def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
                             continue
 
                         logging.info("Triggering scheduled job: %s", s["label"])
-                        _run_job(db, s["command"], data_dir, extra_env=extra_env, is_cron=1, queue_name=s.get("queue_name"))
+                        cmd_env = json.loads(s["env"]) if s.get("env") else None
+                        job_exec = s.get("job_exec")
+                        _run_job(db, s["command"], data_dir, extra_env=extra_env, is_cron=1, queue_name=s.get("queue_name"), cmd_env=cmd_env, job_exec=job_exec)
                         db.update_schedule(s["id"], last_run=now.strftime("%Y-%m-%d %H:%M:%S"))
                         broadcaster.publish("schedules", {"action": "updated", "schedule_id": s["id"]})
                 except Exception as e:
@@ -394,22 +423,21 @@ def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
         time.sleep(60)
 
 
+_service_processes = {}
+
 def _service_manager_loop(services_config_path: str, log_dir: str):
     """Spawns and monitors long-running child processes defined in services.json."""
     import subprocess
     import time
     
-    processes = {}
+    global _service_processes
     
     while True:
         if os.path.exists(services_config_path):
             try:
                 with open(services_config_path, "r") as f:
                     config_data = json.load(f)
-                    if isinstance(config_data, dict):
-                        services = [config_data]
-                    else:
-                        services = config_data
+                    services = _parse_services_config(config_data)
                         
                 for srv in services:
                     if not srv.get("enabled", True):
@@ -424,7 +452,7 @@ def _service_manager_loop(services_config_path: str, log_dir: str):
                     
                     full_cmd = [cmd] + args_list
                     
-                    proc = processes.get(name)
+                    proc = _service_processes.get(name)
                     if proc is None or proc.poll() is not None:
                         if proc is not None:
                             logging.warning(f"Service '{name}' exited with code {proc.returncode}. Restarting...")
@@ -439,13 +467,13 @@ def _service_manager_loop(services_config_path: str, log_dir: str):
                         out_file = open(log_path, "a")
                         
                         try:
-                            processes[name] = subprocess.Popen(
+                            _service_processes[name] = subprocess.Popen(
                                 full_cmd,
                                 env=env,
                                 stdout=out_file,
                                 stderr=subprocess.STDOUT
                             )
-                            logging.info(f"Service '{name}' started (PID {processes[name].pid}).")
+                            logging.info(f"Service '{name}' started (PID {_service_processes[name].pid}).")
                         except Exception as e:
                             logging.error(f"Failed to start service '{name}': {e}")
             except Exception as e:
@@ -537,25 +565,15 @@ def create_app(config: AppConfig, db: Database):
             if os.path.exists(services_config_path):
                 try:
                     with open(services_config_path, "r") as f:
-                        mcp_config = json.load(f)
-                        if isinstance(mcp_config, dict):
-                            mcp_config = [mcp_config]
+                        config_data = json.load(f)
+                        mcp_config = _parse_services_config(config_data)
                         for srv in mcp_config:
                             if srv.get("enabled", True):
                                 pid = None
                                 try:
-                                    import subprocess
-                                    cmd = srv.get("command", "")
-                                    args_list = srv.get("args", [])
-                                    args_list = [os.path.expanduser(a) if a.startswith("~") else a for a in args_list]
-                                    args = " ".join(args_list)
-                                    full_cmd = f"{cmd} {args}".strip()
-                                    if full_cmd:
-                                        res = subprocess.run(["pgrep", "-P", str(os.getpid()), "-f", full_cmd], capture_output=True, text=True)
-                                        if res.returncode == 0 and res.stdout.strip():
-                                            pids = res.stdout.strip().split('\n')
-                                            if pids:
-                                                pid = pids[0]
+                                    proc = _service_processes.get(srv.get("name", "Unknown"))
+                                    if proc and proc.poll() is None:
+                                        pid = proc.pid
                                 except Exception:
                                     pass
                                 
@@ -570,6 +588,54 @@ def create_app(config: AppConfig, db: Database):
             "title": config.title,
             "mcp_servers": mcp_servers
         }
+
+    @app.post("/api/services/{service_name}/restart")
+    async def restart_service(service_name: str):
+        if not config.web_ui_dir:
+            raise HTTPException(status_code=404, detail="Services not configured")
+        
+        services_config_path = os.path.join(config.web_ui_dir, "config", "services.json")
+        if not os.path.exists(services_config_path):
+            raise HTTPException(status_code=404, detail="Services config not found")
+            
+        try:
+            with open(services_config_path, "r") as f:
+                config_data = json.load(f)
+                services = _parse_services_config(config_data)
+                
+                for srv in services:
+                    if srv.get("name") == service_name:
+                        proc = _service_processes.get(service_name)
+                        if proc and proc.poll() is None:
+                            wait_ms = srv.get("SIGKILL_WAIT_MS", 5000)
+                            
+                            def kill_task():
+                                try:
+                                    if os.name == "nt":
+                                        proc.terminate()
+                                    else:
+                                        proc.send_signal(signal.SIGTERM)
+                                except Exception:
+                                    pass
+                                    
+                                try:
+                                    proc.wait(timeout=wait_ms / 1000.0)
+                                except subprocess.TimeoutExpired:
+                                    try:
+                                        proc.kill()
+                                    except Exception:
+                                        pass
+                            
+                            import threading
+                            threading.Thread(target=kill_task, daemon=True).start()
+                            return {"status": "restarting"}
+                        raise HTTPException(status_code=400, detail="Service is not running")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+            
+        raise HTTPException(status_code=404, detail="Service not found")
 
     @app.get("/api/help")
     def get_help():
@@ -739,7 +805,9 @@ def create_app(config: AppConfig, db: Database):
         data = await request.json()
         db.create_schedule(data["label"], data["command"], data["cron_expr"],
                            catch_up=data.get("catch_up", 0),
-                           queue_name=data.get("queue"))
+                           queue_name=data.get("queue"),
+                           env=data.get("env"),
+                           job_exec=data.get("job_exec"))
         broadcaster.publish("schedules", {"action": "created"})
         return {"status": "created"}
 
@@ -753,7 +821,9 @@ def create_app(config: AppConfig, db: Database):
             command=data.get("command"),
             cron_expr=data.get("cron_expr"),
             catch_up=data.get("catch_up"),
-            queue_name=data.get("queue") if "queue" in data else NOT_SET
+            queue_name=data.get("queue") if "queue" in data else NOT_SET,
+            env=data.get("env") if "env" in data else NOT_SET,
+            job_exec=data.get("job_exec") if "job_exec" in data else NOT_SET
         )
         broadcaster.publish("schedules", {"action": "updated", "schedule_id": schedule_id})
         return {"status": "updated"}
@@ -774,7 +844,9 @@ def create_app(config: AppConfig, db: Database):
                 "command": s["command"],
                 "cron": s["cron_expr"],
                 "catch_up": bool(s.get("catch_up", 0)),
-                "queue": s.get("queue_name")
+                "queue": s.get("queue_name"),
+                "env": json.loads(s["env"]) if s.get("env") else None,
+                "job_exec": s.get("job_exec")
             })
         path = _get_schedules_file_path(config)
         try:
@@ -810,15 +882,17 @@ def create_app(config: AppConfig, db: Database):
         is_cron = data.get("is_cron", 0)
         job_type = data.get("job_type", "command")
         queue_name = data.get("queue")
+        cmd_env = data.get("env")
+        job_exec = data.get("job_exec")
         if not command:
             raise HTTPException(status_code=400, detail="No command provided")
-        job_id = _run_job(db, command, data_dir, extra_env=config.extra_env, is_cron=is_cron, job_type=job_type, queue_name=queue_name)
+        job_id = _run_job(db, command, data_dir, extra_env=config.extra_env, is_cron=is_cron, job_type=job_type, queue_name=queue_name, cmd_env=cmd_env, job_exec=job_exec)
         return {"job_id": job_id, "status": "pending"}
 
     # --- Extension hook: let consuming projects add custom routes ---
     if config.extra_routes:
-        def _run_job_fn(command, job_type='command', queue=None):
-            return _run_job(db, command, data_dir, extra_env=config.extra_env, job_type=job_type, queue_name=queue)
+        def _run_job_fn(command, job_type='command', queue=None, env=None, job_exec=None):
+            return _run_job(db, command, data_dir, extra_env=config.extra_env, job_type=job_type, queue_name=queue, cmd_env=env, job_exec=job_exec)
         config.extra_routes(app, db, _run_job_fn)
 
     # Layered static file serving: project files override package defaults
@@ -856,13 +930,26 @@ class DashServer:
 
     def __init__(self, config: AppConfig = None):
         self.config = config or AppConfig()
-        # Apply env overrides
-        from dotenv import load_dotenv
-        env_path = os.path.join(os.getcwd(), ".env")
-        load_dotenv(dotenv_path=env_path, override=True)
-        self.config.host = os.getenv("WEB_UI_HOST", self.config.host)
-        self.config.port = int(os.getenv("WEB_UI_PORT", str(self.config.port)))
-        self.config.ssl_dir = os.getenv("WEB_UI_SSL_DIR", self.config.ssl_dir)
+        # Read app.json overrides if present
+        app_json_path = os.path.join(self.config.web_ui_dir, "config", "app.json")
+        if os.path.isfile(app_json_path):
+            try:
+                with open(app_json_path, "r") as f:
+                    app_data = json.load(f)
+                    if "host" in app_data:
+                        self.config.host = app_data["host"]
+                    if "port" in app_data:
+                        self.config.port = int(app_data["port"])
+                    if "ssl_dir" in app_data:
+                        self.config.ssl_dir = app_data["ssl_dir"]
+                    if "job_exec" in app_data:
+                        os.environ["WEB_UI_JOB_EXEC"] = app_data["job_exec"]
+                    if "env" in app_data and isinstance(app_data["env"], dict):
+                        if not self.config.extra_env:
+                            self.config.extra_env = {}
+                        self.config.extra_env.update(app_data["env"])
+            except Exception as e:
+                logging.error(f"Failed to read {app_json_path}: {e}")
 
         # Ensure paths are absolute relative to CWD
         self.config.web_ui_dir = os.path.abspath(self.config.web_ui_dir)
@@ -1358,6 +1445,57 @@ class DashServer:
             else:
                 print(f"  {YELLOW}Enabled:{RESET}  No")
 
+    def exec_cmd(self, cmd_args):
+        import urllib.request
+        import json
+        import ssl
+        
+        RED = "\033[91m"
+        GREEN = "\033[92m"
+        RESET = "\033[0m"
+        
+        queue = None
+        if len(cmd_args) >= 2 and cmd_args[0] == "--queue":
+            queue = cmd_args[1]
+            cmd_args = cmd_args[2:]
+            
+        if cmd_args and cmd_args[0] == "--":
+            cmd_args = cmd_args[1:]
+            
+        command_str = " ".join(cmd_args)
+        if not command_str:
+            print(f"{RED}Error: No command provided to exec.{RESET}")
+            sys.exit(1)
+            
+        payload = {
+            "command": command_str,
+            "is_cron": 0,
+            "job_type": "command",
+            "queue": queue
+        }
+        
+        protocol = "https" if self.config.ssl_dir else "http"
+        url = f"{protocol}://127.0.0.1:{self.config.port}/run"
+        
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        try:
+            req = urllib.request.Request(
+                url, 
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=5, context=ctx) as response:
+                res_data = json.loads(response.read().decode())
+                job_id = res_data.get("job_id")
+                print(f"{GREEN}Job #{job_id} successfully queued.{RESET}")
+        except Exception as e:
+            print(f"{RED}Error: Could not connect to cli-dash server at {url}. Is it running?{RESET}")
+            print(f"Details: {e}")
+            sys.exit(1)
+
     def run(self):
         """Parse CLI args and dispatch to start/stop/restart/db init."""
         import argparse
@@ -1368,8 +1506,8 @@ class DashServer:
         parser.add_argument("-p", "--port", type=int, help="Port to run on")
         parser.add_argument("--ssl-dir", help="SSL directory (Let's Encrypt format)")
         parser.add_argument("--internal-run", action="store_true", help=argparse.SUPPRESS)
-        parser.add_argument("command", nargs="?", choices=["db", "autostart"], help="Subcommand")
-        parser.add_argument("action", nargs="?", help="Subcommand action")
+        parser.add_argument("command", nargs="?", choices=["db", "autostart", "exec"], help="Subcommand")
+        parser.add_argument("action", nargs=argparse.REMAINDER, help="Subcommand action")
         args = parser.parse_args()
 
         if args.port:
@@ -1383,22 +1521,29 @@ class DashServer:
             self.stop()
         elif args.server == "restart":
             self.restart()
-        elif args.command == "db" and args.action == "init":
-            self.init_db_cmd()
-        elif args.command == "db" and args.action == "reset":
-            db_path = self.db.db_path
-            if os.path.exists(db_path):
-                os.remove(db_path)
-            self.init_db_cmd()
-        elif args.command == "db" and args.action == "export":
-            self.export_schedules_cmd()
-        elif args.command == "db" and args.action == "import":
-            self.import_schedules_cmd()
-        elif args.command == "autostart":
-            if args.action in ["enable", "disable", "status"]:
-                self.autostart_cmd(args.action)
+        elif args.command == "db":
+            action = args.action[0] if args.action else None
+            if action == "init":
+                self.init_db_cmd()
+            elif action == "reset":
+                db_path = self.db.db_path
+                if os.path.exists(db_path):
+                    os.remove(db_path)
+                self.init_db_cmd()
+            elif action == "export":
+                self.export_schedules_cmd()
+            elif action == "import":
+                self.import_schedules_cmd()
             else:
-                print(f"Unknown autostart action: {args.action}")
+                print("Unknown db action")
+        elif args.command == "autostart":
+            action = args.action[0] if args.action else None
+            if action in ["enable", "disable", "status"]:
+                self.autostart_cmd(action)
+            else:
+                print(f"Unknown autostart action: {action}")
                 print("Usage: autostart [enable|disable|status]")
+        elif args.command == "exec":
+            self.exec_cmd(args.action)
         else:
             parser.print_help()
