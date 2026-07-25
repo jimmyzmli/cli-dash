@@ -69,6 +69,17 @@ const App = {
         const activeJob = ref(null);
         const consoleContent = ref('');
         
+        const formattedConsoleContent = computed(() => {
+            if (!consoleContent.value) return '';
+            const el = document.createElement('div');
+            el.innerText = consoleContent.value;
+            let html = el.innerHTML;
+            const urlRegex = /\b((?:https?|ftp|file):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|]|magnet:\?[^\s"'<>]+)/gi;
+            return html.replace(urlRegex, (match) => {
+                return `<a href="${match}" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: underline;">${match}</a>`;
+            });
+        });
+
         const logComponent = ref(null);
         
         const modal = reactive({
@@ -380,7 +391,7 @@ const App = {
             appConfig, mcpServers, connected, headerState, allHeaderOptions, saveHeaderState,
             tabs, currentTab, switchTab, activeTabComponent, monitorHidden,
             showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
-            activeJobId, activeJobLabel, activeJob, consoleContent, closeConsole, showHelpConsole,
+            activeJobId, activeJobLabel, activeJob, consoleContent, formattedConsoleContent, closeConsole, showHelpConsole,
             modal, closeModal, logComponent, getOptionIcon, toggleHeaderOption
         };
     }

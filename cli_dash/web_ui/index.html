@@ -93,7 +93,7 @@
                         </component>
                         <div id="console" class="console" ref="consoleEl">
                             <div v-if="!activeJobId" class="placeholder">Select a task to see output...</div>
-                            <template v-else>{{ consoleContent }}</template>
+                            <template v-else><span v-html="formattedConsoleContent" style="white-space: inherit;"></span></template>
                         </div>
                     </div>
 
