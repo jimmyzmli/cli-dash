@@ -719,11 +719,26 @@ const HistoryView = {
             return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString();
         };
 
+        const formatDuration = (seconds) => {
+            if (typeof seconds === 'string') {
+                seconds = seconds.trim() === '' ? null : Number(seconds);
+            }
+
+            // Catch null, undefined, or strings that failed to convert (which become NaN)
+            if (seconds === null || seconds === undefined || isNaN(seconds)) return '';
+
+            if (seconds < 60) return seconds.toFixed(2) + 's';
+            
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            return `${m}m ${s}s`;
+        };
+
         window.showMonitorGlobal = (show = true) => {
             showMonitor.value = show;
         };
 
-        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, showJob: window.showJobGlobal, getQueueColor: window.getQueueColor, onScroll };
+        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, formatDuration, showJob: window.showJobGlobal, getQueueColor: window.getQueueColor, onScroll };
     }
 };
 

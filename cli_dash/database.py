@@ -40,7 +40,8 @@ class Database:
                 finished_at TIMESTAMP,
                 queue_name TEXT,
                 env TEXT,
-                job_exec TEXT
+                job_exec TEXT,
+                duration REAL
             )
         ''')
         c.execute('''
@@ -71,6 +72,7 @@ class Database:
             ("queue_name", "schedules", "NULL"),
             ("env", "schedules", "NULL"),
             ("job_exec", "schedules", "NULL"),
+            ("duration", "jobs", "NULL"),
         ]:
             try:
                 if default == "NULL":
@@ -120,7 +122,7 @@ class Database:
                     continue
                 raise
 
-    def update_job(self, job_id, status=None, output=None, pid=None, finished=False):
+    def update_job(self, job_id, status=None, output=None, pid=None, finished=False, duration=None):
         for _ in range(5):
             try:
                 conn = self._connect()
@@ -131,6 +133,8 @@ class Database:
                     c.execute('UPDATE jobs SET output = ? WHERE id = ?', (output, job_id))
                 if pid is not None:
                     c.execute('UPDATE jobs SET pid = ? WHERE id = ?', (pid, job_id))
+                if duration is not None:
+                    c.execute('UPDATE jobs SET duration = ? WHERE id = ?', (duration, job_id))
                 if finished:
                     c.execute('UPDATE jobs SET finished_at = CURRENT_TIMESTAMP WHERE id = ?', (job_id,))
                 conn.commit()

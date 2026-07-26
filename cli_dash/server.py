@@ -247,6 +247,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
             else:
                 popen_kwargs["start_new_session"] = True
 
+            start_time = time.monotonic()
             process = subprocess.Popen(command, **popen_kwargs)
             db.update_job(job_id, pid=process.pid)
             broadcaster.publish("jobs", {"action": "updated", "job_id": job_id})
@@ -258,11 +259,12 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
                 broadcaster.publish("log", {"job_id": job_id, "content": line, "job_type": job_type})
 
             return_code = process.wait()
+            duration = time.monotonic() - start_time
             end_timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             status = "completed" if return_code == 0 else "failed"
-            end_msg = f"[{end_timestamp}] Job {status} with exit code {return_code}\n"
+            end_msg = f"[{end_timestamp}] Job {status} with exit code {return_code} in {duration:.2f}s\n"
             log_file.write(end_msg)
-            db.update_job(job_id, status=status, finished=True)
+            db.update_job(job_id, status=status, finished=True, duration=duration)
             broadcaster.publish("log", {"job_id": job_id, "content": end_msg, "job_type": job_type})
             broadcaster.publish("jobs", {"action": "updated", "job_id": job_id})
     except Exception as e:
@@ -1363,6 +1365,62 @@ class DashServer:
         _seed_schedules(self.db, path)
         print(f"Imported schedules from {path}")
 
+    def truncate_jobs_cmd(self, until_str: str = None):
+        import datetime
+        import re
+
+        cutoff_date = None
+        if until_str:
+            match = re.match(r"^(\d+)([d])$", until_str)
+            if not match:
+                print("Invalid --until format. Use e.g. 10d for 10 days.")
+                return
+            val = int(match.group(1))
+            now = datetime.datetime.now()
+            cutoff_date = now - datetime.timedelta(days=val)
+
+        cutoff_str = cutoff_date.strftime("%Y-%m-%d %H:%M:%S") if cutoff_date else None
+
+        conn = self.db._connect()
+        c = conn.cursor()
+        
+        if cutoff_str:
+            c.execute("SELECT id FROM jobs WHERE created_at < ?", (cutoff_str,))
+        else:
+            c.execute("SELECT id FROM jobs")
+            
+        jobs_to_delete = [row[0] for row in c.fetchall()]
+        
+        if not jobs_to_delete:
+            print("No jobs to truncate.")
+            conn.close()
+            return
+            
+        print(f"Truncating {len(jobs_to_delete)} jobs...")
+        
+        if cutoff_str:
+            c.execute("DELETE FROM jobs WHERE created_at < ?", (cutoff_str,))
+        else:
+            c.execute("DELETE FROM jobs")
+            
+        conn.commit()
+        conn.close()
+        
+        # Now delete log files
+        log_dir = os.path.join(self.config.data_dir, "jobs")
+        deleted_files = 0
+        if os.path.exists(log_dir):
+            for job_id in jobs_to_delete:
+                log_path = os.path.join(log_dir, f"{job_id}.log")
+                if os.path.exists(log_path):
+                    try:
+                        os.remove(log_path)
+                        deleted_files += 1
+                    except Exception as e:
+                        pass
+                        
+        print(f"Truncated {len(jobs_to_delete)} database rows and {deleted_files} log files.")
+
     def autostart_cmd(self, action: str):
         if os.name == "nt":
             print("Notice: Autostart management is currently only implemented for macOS (LaunchAgents).")
@@ -1564,6 +1622,11 @@ class DashServer:
                 self.export_schedules_cmd()
             elif action == "import":
                 self.import_schedules_cmd()
+            elif action == "truncate":
+                until_str = None
+                if len(args.action) >= 3 and args.action[1] == "--until":
+                    until_str = args.action[2]
+                self.truncate_jobs_cmd(until_str)
             else:
                 print("Unknown db action")
         elif args.command == "autostart":
