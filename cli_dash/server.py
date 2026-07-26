@@ -21,6 +21,33 @@ from cli_dash.database import Database, NOT_SET
 from cli_dash.utils import get_next_cron_run
 
 
+def rotate_log_if_needed(log_path: str, max_lines: int = 1000):
+    """Rotates the log file if it exceeds max_lines, keeping all backups."""
+    if not os.path.exists(log_path):
+        return
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = sum(1 for _ in f)
+        if lines >= max_lines:
+            import glob
+            backups = glob.glob(f"{log_path}.*")
+            indices = []
+            for b in backups:
+                try:
+                    indices.append(int(b.split('.')[-1]))
+                except ValueError:
+                    pass
+            max_idx = max(indices) if indices else 0
+            for i in range(max_idx, 0, -1):
+                old_log = f"{log_path}.{i}"
+                new_log = f"{log_path}.{i+1}"
+                if os.path.exists(old_log):
+                    os.rename(old_log, new_log)
+            os.rename(log_path, f"{log_path}.1")
+    except Exception as e:
+        logging.error(f"Error rotating log {log_path}: {e}")
+
+
 class Broadcaster:
     """Manages SSE connections and broadcasts events to all active clients."""
     def __init__(self):
@@ -464,6 +491,7 @@ def _service_manager_loop(services_config_path: str, log_dir: str):
                             env.update(srv["env"])
                             
                         log_path = os.path.join(log_dir, f"service-{name}.log")
+                        rotate_log_if_needed(log_path)
                         out_file = open(log_path, "a")
                         
                         try:
@@ -539,6 +567,7 @@ def create_app(config: AppConfig, db: Database):
             log_line = f'{timestamp} [INFO] {client} - "DELETE {request.url.path}"\n'
 
         if log_line:
+            rotate_log_if_needed(access_log_path)
             with open(access_log_path, "a") as f:
                 f.write(log_line)
 
@@ -968,6 +997,7 @@ class DashServer:
 
         # Setup logging
         self.error_log = os.path.join(self.config.log_dir, "web-ui.log")
+        rotate_log_if_needed(self.error_log)
         logging.basicConfig(
             filename=self.error_log,
             level=logging.INFO,
