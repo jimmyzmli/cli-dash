@@ -750,6 +750,13 @@ def create_app(config: AppConfig, db: Database):
                 pass
         return {"status": "deleted"}
 
+    @app.post("/api/job/{job_id}/terminate")
+    async def terminate_job_api(job_id: int):
+        job = db.get_job(job_id)
+        if job and job.get("pid"):
+            terminate_process(job["pid"])
+        return {"status": "terminated"}
+
     @app.get("/api/job/{job_id}/log")
     async def get_job_log(job_id: int, offset: int = 0):
         """

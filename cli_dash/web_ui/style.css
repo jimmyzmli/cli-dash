@@ -392,7 +392,8 @@ button.warning:hover {
     justify-content: center;
 }
 
-.action-job-btn.delete-btn:hover {
+.action-job-btn.delete-btn:hover,
+.action-job-btn.terminate-btn:hover {
     color: var(--error-color);
     background: rgba(218, 54, 51, 0.1);
 }

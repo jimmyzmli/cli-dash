@@ -701,12 +701,16 @@ const HistoryView = {
         
         const deleteJob = async (job) => {
             let msg = 'Delete logs for this job?';
-            if(job.status === 'running') msg = 'Warning: This job is still running. Terminating it now may lead to data loss. Kill process and delete logs?';
-            else if(job.status === 'pending') msg = 'Delete this pending job?';
+            if(job.status === 'pending') msg = 'Delete this pending job?';
             if(!confirm(msg)) return;
             await fetch(`/api/job/${job.id}`, { method: 'DELETE' });
             handleRefresh();
         };
+
+        const terminateJob = async (job) => {
+            await fetch(`/api/job/${job.id}/terminate`, { method: 'POST' });
+        };
+
 
         const runJobAgain = (job) => {
             let env = job.env;
@@ -738,7 +742,7 @@ const HistoryView = {
             showMonitor.value = show;
         };
 
-        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, runJobAgain, formatTime, formatDuration, showJob: window.showJobGlobal, getQueueColor: window.getQueueColor, onScroll };
+        return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, terminateJob, runJobAgain, formatTime, formatDuration, showJob: window.showJobGlobal, getQueueColor: window.getQueueColor, onScroll };
     }
 };
 
