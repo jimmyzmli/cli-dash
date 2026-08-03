@@ -968,6 +968,10 @@ class DashServer:
 
     def __init__(self, config: AppConfig = None):
         self.config = config or AppConfig()
+        
+        if os.getenv("WEB_UI_SSL_DIR"):
+            self.config.ssl_dir = os.getenv("WEB_UI_SSL_DIR")
+
         # Read app.json overrides if present
         app_json_path = os.path.join(self.config.web_ui_dir, "config", "app.json")
         if os.path.isfile(app_json_path):
@@ -978,8 +982,6 @@ class DashServer:
                         self.config.host = app_data["host"]
                     if "port" in app_data:
                         self.config.port = int(app_data["port"])
-                    if "ssl_dir" in app_data:
-                        self.config.ssl_dir = app_data["ssl_dir"]
                     if "job_exec" in app_data:
                         os.environ["WEB_UI_JOB_EXEC"] = app_data["job_exec"]
                     if "env" in app_data and isinstance(app_data["env"], dict):
