@@ -42,8 +42,14 @@ def rotate_log_if_needed(log_path: str, max_lines: int = 1000):
                 old_log = f"{log_path}.{i}"
                 new_log = f"{log_path}.{i+1}"
                 if os.path.exists(old_log):
-                    os.rename(old_log, new_log)
-            os.rename(log_path, f"{log_path}.1")
+                    try:
+                        os.replace(old_log, new_log)
+                    except OSError:
+                        pass
+            import shutil
+            shutil.copy2(log_path, f"{log_path}.1")
+            with open(log_path, "w", encoding="utf-8") as f:
+                pass
     except Exception as e:
         logging.error(f"Error rotating log {log_path}: {e}")
 
@@ -1034,22 +1040,15 @@ class DashServer:
         return None
 
     def _get_cert_expiry(self, cert_path):
-        """Get the expiry date of a PEM certificate using openssl CLI."""
-        import subprocess
+        """Get the expiry date of a PEM certificate."""
+        import _ssl
         import re
         try:
-            # Get enddate
-            res = subprocess.run(
-                ["openssl", "x509", "-enddate", "-noout", "-in", cert_path],
-                capture_output=True, text=True, check=True
-            )
-            # notAfter=May  2 12:00:00 2026 GMT
-            line = res.stdout.strip()
-            if "=" in line:
-                date_str = line.split("=")[1]
+            cert = _ssl._test_decode_cert(cert_path)
+            if 'notAfter' in cert:
+                date_str = cert['notAfter']
                 # Normalize spaces
                 date_str = re.sub(' +', ' ', date_str)
-                # openssl format: May 2 12:00:00 2026 GMT
                 try:
                     return datetime.strptime(date_str, "%b %d %H:%M:%S %Y %Z")
                 except ValueError:
@@ -1059,7 +1058,37 @@ class DashServer:
             logging.error(f"Error checking cert expiry: {e}")
         return None
 
-    def start(self):
+    def _kill_port_zombies(self):
+        """Find and kill any processes listening on the configured port."""
+        port = self.config.port
+        print(f"Force mode: checking for zombie processes on port {port}...")
+        try:
+            if os.name == 'nt':
+                res = subprocess.run(f"netstat -ano | findstr :{port}", shell=True, capture_output=True, text=True)
+                for line in res.stdout.strip().split('\n'):
+                    parts = line.strip().split()
+                    if len(parts) >= 5 and 'LISTENING' in parts:
+                        pid = parts[-1]
+                        if pid != "0":
+                            print(f"Force killing zombie process (PID: {pid}) on port {port}...")
+                            res = subprocess.run(["taskkill", "/F", "/T", "/PID", pid], 
+                                           capture_output=True, text=True,
+                                           creationflags=0x08000000)
+                            if res.returncode != 0:
+                                print(f"\033[91mFailed to kill zombie process {pid}: {res.stderr.strip()}\033[0m")
+            else:
+                res = subprocess.run(["lsof", "-t", f"-i:{port}"], capture_output=True, text=True)
+                for pid in res.stdout.strip().split():
+                    if pid.isdigit():
+                        print(f"Force killing zombie process (PID: {pid}) on port {port}...")
+                        try:
+                            os.kill(int(pid), signal.SIGKILL)
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"Warning: Failed to clean up port {port} zombies: {e}")
+
+    def start(self, force=False):
         # ANSI Colors
         GREEN = "\033[92m"
         BLUE = "\033[94m"
@@ -1067,6 +1096,9 @@ class DashServer:
         RED = "\033[91m"
         BOLD = "\033[1m"
         RESET = "\033[0m"
+
+        if force:
+            self._kill_port_zombies()
 
         pid = self.is_running()
         if pid:
@@ -1266,49 +1298,55 @@ class DashServer:
             loop="asyncio"
         )
 
-    def stop(self):
+    def stop(self, force=False):
         YELLOW = "\033[93m"
         RED = "\033[91m"
         RESET = "\033[0m"
 
         pid = self.is_running()
-        if not pid:
+        if not pid and not force:
             print(f"{YELLOW}Server is not running.{RESET}")
             return
 
-        print(f"Stopping server (PID: {pid})...")
-        try:
-            if os.name == "nt":
-                subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(pid)],
-                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    creationflags=0x08000000
-                )
-            else:
-                try:
-                    os.killpg(pid, signal.SIGTERM)
-                except AttributeError:
-                    os.kill(pid, signal.SIGTERM)
-                time.sleep(1)
-                if self.is_running():
-                    print(f"{RED}Force killing...{RESET}")
+        if pid:
+            print(f"Stopping server (PID: {pid})...")
+            try:
+                if os.name == "nt":
+                    res = subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(pid)],
+                        capture_output=True, text=True,
+                        creationflags=0x08000000
+                    )
+                    if res.returncode != 0:
+                        print(f"{RED}Failed to kill PID {pid}: {res.stderr.strip()}{RESET}")
+                else:
                     try:
-                        os.killpg(pid, signal.SIGKILL)
+                        os.killpg(pid, signal.SIGTERM)
                     except AttributeError:
-                        os.kill(pid, signal.SIGKILL)
+                        os.kill(pid, signal.SIGTERM)
+                    time.sleep(1)
+                    if self.is_running():
+                        print(f"{RED}Force killing...{RESET}")
+                        try:
+                            os.killpg(pid, signal.SIGKILL)
+                        except AttributeError:
+                            os.kill(pid, signal.SIGKILL)
 
-            if os.path.exists(self.pid_file):
-                os.remove(self.pid_file)
-            print(f"{YELLOW}Server stopped.{RESET}")
-        except ProcessLookupError:
-            print(f"{RED}Process not found.{RESET}")
-            if os.path.exists(self.pid_file):
-                os.remove(self.pid_file)
+                if os.path.exists(self.pid_file):
+                    os.remove(self.pid_file)
+                print(f"{YELLOW}Server stopped.{RESET}")
+            except ProcessLookupError:
+                print(f"{RED}Process not found.{RESET}")
+                if os.path.exists(self.pid_file):
+                    os.remove(self.pid_file)
+                
+        if force:
+            self._kill_port_zombies()
 
-    def restart(self):
-        self.stop()
+    def restart(self, force=False):
+        self.stop(force=force)
         time.sleep(1)
-        self.start()
+        self.start(force=force)
 
     def init_db_cmd(self):
         import shutil
@@ -1601,6 +1639,7 @@ class DashServer:
         parser.add_argument("-s", "--server", choices=["start", "stop", "restart"],
                             help="Server control")
         parser.add_argument("-p", "--port", type=int, help="Port to run on")
+        parser.add_argument("-f", "--force", action="store_true", help="Force kill processes on port")
         parser.add_argument("--ssl-dir", help="SSL directory (Let's Encrypt format)")
         parser.add_argument("--internal-run", action="store_true", help=argparse.SUPPRESS)
         parser.add_argument("command", nargs="?", choices=["db", "autostart", "exec"], help="Subcommand")
@@ -1613,11 +1652,11 @@ class DashServer:
             self.config.ssl_dir = os.path.abspath(args.ssl_dir)
 
         if args.server == "start":
-            self.start()
+            self.start(force=args.force)
         elif args.server == "stop":
-            self.stop()
+            self.stop(force=args.force)
         elif args.server == "restart":
-            self.restart()
+            self.restart(force=args.force)
         elif args.command == "db":
             action = args.action[0] if args.action else None
             if action == "init":
