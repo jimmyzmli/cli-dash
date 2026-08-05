@@ -313,6 +313,7 @@
                         <span class="job-duration" v-if="job.duration" style="font-size:0.8rem; color:var(--text-secondary); min-width: 3.4rem">{{ formatDuration(job.duration) }}</span>
                         <span class="job-cmd">{{ job.command }}</span>
                         <span v-if="job.is_cron" class="cron-badge">CRON</span>
+                        <span v-else-if="job.job_source === 'exec'" class="cron-badge" style="background-color: var(--accent-color)">EXEC</span>
                         <span v-if="job.queue_name" class="cron-badge" :style="{ backgroundColor: getQueueColor(job.queue_name) }">{{ job.queue_name }}</span>
                         <span class="status-badge" :class="'status-' + job.status">{{ job.status }}</span>
                     </div>

@@ -41,7 +41,8 @@ class Database:
                 queue_name TEXT,
                 env TEXT,
                 job_exec TEXT,
-                duration REAL
+                duration REAL,
+                job_source TEXT DEFAULT 'manual'
             )
         ''')
         c.execute('''
@@ -73,6 +74,7 @@ class Database:
             ("env", "schedules", "NULL"),
             ("job_exec", "schedules", "NULL"),
             ("duration", "jobs", "NULL"),
+            ("job_source", "jobs", "'manual'"),
         ]:
             try:
                 if default == "NULL":
@@ -100,7 +102,7 @@ class Database:
 
     # --- Job CRUD ---
 
-    def create_job(self, command, is_cron=0, job_type='command', queue_name=None, env=None, job_exec=None):
+    def create_job(self, command, is_cron=0, job_type='command', queue_name=None, env=None, job_exec=None, job_source='manual'):
         import json
         env_str = json.dumps(env) if env else None
         
@@ -109,8 +111,8 @@ class Database:
                 conn = self._connect()
                 c = conn.cursor()
                 c.execute(
-                    'INSERT INTO jobs (command, status, is_cron, job_type, queue_name, env, job_exec) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                    (command, 'pending', is_cron, job_type, queue_name, env_str, job_exec),
+                    'INSERT INTO jobs (command, status, is_cron, job_type, queue_name, env, job_exec, job_source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                    (command, 'pending', is_cron, job_type, queue_name, env_str, job_exec, job_source),
                 )
                 job_id = c.lastrowid
                 conn.commit()

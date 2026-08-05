@@ -377,7 +377,7 @@ def run_command_task_wrapper(db: Database, job_id: int, command: str, data_dir: 
 
 
 def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
-             is_cron=0, job_type='command', queue_name=None, cmd_env=None, job_exec=None):
+             is_cron=0, job_type='command', queue_name=None, cmd_env=None, job_exec=None, job_source='manual'):
     """Create a job record and start execution in a daemon thread."""
     exec_prefix = job_exec if job_exec is not None else os.getenv("WEB_UI_JOB_EXEC")
     bypass_prefixes = ("/", "./", "cd ", "sh ", "bash ", "zsh ", "source ")
@@ -390,7 +390,7 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
     if cmd_env:
         final_env.update(cmd_env)
 
-    job_id = db.create_job(command, is_cron=is_cron, job_type=job_type, queue_name=queue_name, env=cmd_env, job_exec=job_exec)
+    job_id = db.create_job(command, is_cron=is_cron, job_type=job_type, queue_name=queue_name, env=cmd_env, job_exec=job_exec, job_source=job_source)
     broadcaster.publish("jobs", {"action": "created", "job_id": job_id})
 
     if queue_name:
@@ -928,15 +928,16 @@ def create_app(config: AppConfig, db: Database):
         queue_name = data.get("queue")
         cmd_env = data.get("env")
         job_exec = data.get("job_exec")
+        job_source = data.get("job_source", "manual")
         if not command:
             raise HTTPException(status_code=400, detail="No command provided")
-        job_id = _run_job(db, command, data_dir, extra_env=config.extra_env, is_cron=is_cron, job_type=job_type, queue_name=queue_name, cmd_env=cmd_env, job_exec=job_exec)
+        job_id = _run_job(db, command, data_dir, extra_env=config.extra_env, is_cron=is_cron, job_type=job_type, queue_name=queue_name, cmd_env=cmd_env, job_exec=job_exec, job_source=job_source)
         return {"job_id": job_id, "status": "pending"}
 
     # --- Extension hook: let consuming projects add custom routes ---
     if config.extra_routes:
-        def _run_job_fn(command, job_type='command', queue=None, env=None, job_exec=None):
-            return _run_job(db, command, data_dir, extra_env=config.extra_env, job_type=job_type, queue_name=queue, cmd_env=env, job_exec=job_exec)
+        def _run_job_fn(command, job_type='command', queue=None, env=None, job_exec=None, job_source='manual'):
+            return _run_job(db, command, data_dir, extra_env=config.extra_env, job_type=job_type, queue_name=queue, cmd_env=env, job_exec=job_exec, job_source=job_source)
         config.extra_routes(app, db, _run_job_fn)
 
     # Layered static file serving: project files override package defaults
@@ -1594,7 +1595,22 @@ class DashServer:
             queue = cmd_args[1]
             cmd_args = cmd_args[2:]
             
+        monitor = False
+        if "--monitor" in cmd_args:
+            monitor = True
+            cmd_args.remove("--monitor")
+            
         if cmd_args and cmd_args[0] == "--":
+            cmd_args = cmd_args[1:]
+            
+        env_overrides = {}
+        while cmd_args and "=" in cmd_args[0] and not cmd_args[0].startswith("-"):
+            key, val = cmd_args[0].split("=", 1)
+            if val.startswith('"') and val.endswith('"'):
+                val = val[1:-1]
+            elif val.startswith("'") and val.endswith("'"):
+                val = val[1:-1]
+            env_overrides[key] = val
             cmd_args = cmd_args[1:]
             
         command_str = " ".join(cmd_args)
@@ -1606,8 +1622,11 @@ class DashServer:
             "command": command_str,
             "is_cron": 0,
             "job_type": "command",
-            "queue": queue
+            "queue": queue,
+            "job_source": "exec"
         }
+        if env_overrides:
+            payload["env"] = env_overrides
         
         protocol = "https" if self.config.ssl_dir else "http"
         url = f"{protocol}://127.0.0.1:{self.config.port}/run"
@@ -1625,7 +1644,47 @@ class DashServer:
             with urllib.request.urlopen(req, timeout=5, context=ctx) as response:
                 res_data = json.loads(response.read().decode())
                 job_id = res_data.get("job_id")
+                log_file = os.path.abspath(os.path.join(self.config.data_dir, "jobs", f"{job_id}.log"))
                 print(f"{GREEN}Job #{job_id} successfully queued.{RESET}")
+                print(f"Log File: file://{log_file}")
+                
+                if monitor:
+                    print("Monitoring job output...\n")
+                    offset = 0
+                    import time
+                    while True:
+                        log_url = f"{protocol}://127.0.0.1:{self.config.port}/api/job/{job_id}/log?offset={offset}"
+                        content = ""
+                        try:
+                            log_req = urllib.request.Request(log_url)
+                            with urllib.request.urlopen(log_req, timeout=5, context=ctx) as log_res:
+                                log_data = json.loads(log_res.read().decode())
+                                content = log_data.get("content", "")
+                                if content:
+                                    print(content, end="", flush=True)
+                                    offset = log_data.get("offset", offset)
+                        except Exception:
+                            pass
+                        
+                        stat_url = f"{protocol}://127.0.0.1:{self.config.port}/api/job/{job_id}"
+                        try:
+                            stat_req = urllib.request.Request(stat_url)
+                            with urllib.request.urlopen(stat_req, timeout=5, context=ctx) as stat_res:
+                                stat_data = json.loads(stat_res.read().decode())
+                                if stat_data.get("status") in ("completed", "failed"):
+                                    # Drain any remaining logs one last time if we didn't just get some
+                                    if not content:
+                                        log_req = urllib.request.Request(log_url)
+                                        with urllib.request.urlopen(log_req, timeout=5, context=ctx) as log_res:
+                                            log_data = json.loads(log_res.read().decode())
+                                            content = log_data.get("content", "")
+                                            if content:
+                                                print(content, end="", flush=True)
+                                    break
+                        except Exception:
+                            break
+                        time.sleep(1)
+                    print(f"\n{GREEN}Job finished.{RESET}")
         except Exception as e:
             print(f"{RED}Error: Could not connect to cli-dash server at {url}. Is it running?{RESET}")
             print(f"Details: {e}")

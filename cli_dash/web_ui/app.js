@@ -382,11 +382,13 @@ const App = {
                 logComponent.value = window.dashExtensions.logComponent;
             }
             
-            tabs.value = [
-                ...extTabs,
-                { id: 'commands', label: 'Commands', component: 'CommandsView' },
-                { id: 'scheduled', label: 'Scheduled', component: 'ScheduledView' }
+            const allTabs = [
+                ...extTabs.map(t => ({...t, order: t.order !== undefined ? t.order : 0})),
+                { id: 'commands', label: 'Commands', component: 'CommandsView', order: 100 },
+                { id: 'scheduled', label: 'Scheduled', component: 'ScheduledView', order: 110 }
             ];
+            
+            tabs.value = allTabs.sort((a, b) => a.order - b.order);
 
             window.dashExtensions.onInit.forEach(fn => fn());
 
