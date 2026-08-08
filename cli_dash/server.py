@@ -464,8 +464,12 @@ def _service_manager_loop(services_config_path: str, log_dir: str):
     """Spawns and monitors long-running child processes defined in services.json."""
     import subprocess
     import time
+    import signal
+    import urllib.request
+    import urllib.error
     
     global _service_processes
+    _service_health_failures = {}
     
     while True:
         if os.path.exists(services_config_path):
@@ -509,9 +513,53 @@ def _service_manager_loop(services_config_path: str, log_dir: str):
                                 stdout=out_file,
                                 stderr=subprocess.STDOUT
                             )
+                            _service_health_failures[name] = 0
                             logging.info(f"Service '{name}' started (PID {_service_processes[name].pid}).")
                         except Exception as e:
                             logging.error(f"Failed to start service '{name}': {e}")
+                    else:
+                        hc = srv.get("health_check")
+                        if hc and hc.get("enabled", True) and hc.get("type") == "http":
+                            port = srv.get("port")
+                            if port:
+                                path = hc.get("path", "/health")
+                                timeout = hc.get("timeout_seconds", 2)
+                                max_failures = hc.get("max_failures", 3)
+                                url = f"http://localhost:{port}{path}"
+                                
+                                is_healthy = False
+                                try:
+                                    req = urllib.request.Request(url)
+                                    with urllib.request.urlopen(req, timeout=timeout) as response:
+                                        if response.status == 200:
+                                            is_healthy = True
+                                except Exception:
+                                    pass
+                                
+                                if is_healthy:
+                                    _service_health_failures[name] = 0
+                                else:
+                                    fails = _service_health_failures.get(name, 0) + 1
+                                    _service_health_failures[name] = fails
+                                    if fails >= max_failures:
+                                        logging.error(f"Service '{name}' failed health check {fails} times. Restarting gracefully...")
+                                        try:
+                                            if os.name == "nt":
+                                                proc.terminate()
+                                            else:
+                                                proc.send_signal(signal.SIGTERM)
+                                        except Exception:
+                                            pass
+                                        
+                                        try:
+                                            proc.wait(timeout=5.0)
+                                        except subprocess.TimeoutExpired:
+                                            try:
+                                                proc.kill()
+                                            except Exception:
+                                                pass
+                                        _service_processes[name] = None
+                                        _service_health_failures[name] = 0
             except Exception as e:
                 logging.error(f"Error reading {services_config_path} for service manager: {e}")
         
