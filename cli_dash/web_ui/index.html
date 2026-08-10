@@ -96,6 +96,18 @@
                             <h2><span class="icon">💻</span> Live Console</h2>
                             <div class="active-job-wrapper">
                                 <div class="active-job-id">Viewing: {{ activeJobLabel }}</div>
+                                <button class="close-btn" v-if="activeJobId && activeJob?.command" @click="copyCommand"
+                                    title="Copy Command">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                                        <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V6h16v12zM5.5 7.5L4 9l3 3-3 3 1.5 1.5 4.5-4.5-4.5-4.5zM11 14h6v2h-6v-2z"/>
+                                    </svg>
+                                </button>
+                                <button class="close-btn" v-if="activeJobId && activeJob?.log_path" @click="copyLogPath"
+                                    title="Copy Log Path">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14" height="14">
+                                        <path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/>
+                                    </svg>
+                                </button>
                                 <button class="close-btn" v-if="activeJobId" @click="closeConsole"
                                     title="Close Console">
                                     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"

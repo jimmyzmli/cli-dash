@@ -323,6 +323,32 @@ const App = {
             }
         };
 
+        const copyCommand = async () => {
+            if (activeJob.value && activeJob.value.command) {
+                try {
+                    await navigator.clipboard.writeText(activeJob.value.command);
+                    window.showToast('Copied command to clipboard', 'success');
+                } catch (err) {
+                    window.showToast('Failed to copy command', 'error');
+                }
+            } else {
+                window.showToast('No command available', 'error');
+            }
+        };
+
+        const copyLogPath = async () => {
+            if (activeJob.value && activeJob.value.log_path) {
+                try {
+                    await navigator.clipboard.writeText(activeJob.value.log_path);
+                    window.showToast('Copied log path to clipboard', 'success');
+                } catch (err) {
+                    window.showToast('Failed to copy log path', 'error');
+                }
+            } else {
+                window.showToast('No log path available for this job', 'error');
+            }
+        };
+
         const closeConsole = () => {
             activeJobId.value = null;
             activeJobLabel.value = '';
@@ -439,7 +465,7 @@ const App = {
             appConfig, mcpServers, connected, headerState, allHeaderOptions, saveHeaderState,
             tabs, currentTab, switchTab, activeTabComponent, monitorHidden,
             showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
-            activeJobId, activeJobLabel, activeJob, consoleContent, formattedConsoleContent, closeConsole, showHelpConsole,
+            activeJobId, activeJobLabel, activeJob, consoleContent, formattedConsoleContent, closeConsole, copyLogPath, copyCommand, showHelpConsole,
             modal, closeModal, logComponent, getOptionIcon, toggleHeaderOption, restartService
         };
     }

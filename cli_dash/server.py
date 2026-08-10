@@ -787,6 +787,7 @@ def create_app(config: AppConfig, db: Database):
         job = db.get_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
+        job["log_path"] = os.path.abspath(os.path.join(data_dir, "jobs", f"{job_id}.log"))
         return job
 
     @app.delete("/api/job/{job_id}")
