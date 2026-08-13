@@ -15,7 +15,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional, List
+from typing import Callable, Optional, List, Union
 
 from cli_dash.database import Database, NOT_SET
 from cli_dash.utils import get_next_cron_run
@@ -104,7 +104,7 @@ broadcaster = Broadcaster()
 class AppConfig:
     """Configuration for a cli-dash instance."""
     title: str = "Control Center"
-    host: str = "127.0.0.1"
+    host: Union[str, List[str]] = "127.0.0.1"
     port: int = 3000
     data_dir: str = "data"
     log_dir: str = "logs"
@@ -1028,24 +1028,31 @@ class DashServer:
         if os.getenv("WEB_UI_SSL_DIR"):
             self.config.ssl_dir = os.getenv("WEB_UI_SSL_DIR")
 
+        def load_config_file(filepath: str):
+            if os.path.isfile(filepath):
+                try:
+                    with open(filepath, "r") as f:
+                        app_data = json.load(f)
+                        if "host" in app_data:
+                            self.config.host = app_data["host"]
+                        if "port" in app_data:
+                            self.config.port = int(app_data["port"])
+                        if "job_exec" in app_data:
+                            os.environ["WEB_UI_JOB_EXEC"] = app_data["job_exec"]
+                        if "env" in app_data and isinstance(app_data["env"], dict):
+                            if not self.config.extra_env:
+                                self.config.extra_env = {}
+                            self.config.extra_env.update(app_data["env"])
+                        if "ssl_dir" in app_data:
+                            self.config.ssl_dir = app_data["ssl_dir"]
+                except Exception as e:
+                    logging.error(f"Failed to read {filepath}: {e}")
+
         # Read app.json overrides if present
-        app_json_path = os.path.join(self.config.web_ui_dir, "config", "app.json")
-        if os.path.isfile(app_json_path):
-            try:
-                with open(app_json_path, "r") as f:
-                    app_data = json.load(f)
-                    if "host" in app_data:
-                        self.config.host = app_data["host"]
-                    if "port" in app_data:
-                        self.config.port = int(app_data["port"])
-                    if "job_exec" in app_data:
-                        os.environ["WEB_UI_JOB_EXEC"] = app_data["job_exec"]
-                    if "env" in app_data and isinstance(app_data["env"], dict):
-                        if not self.config.extra_env:
-                            self.config.extra_env = {}
-                        self.config.extra_env.update(app_data["env"])
-            except Exception as e:
-                logging.error(f"Failed to read {app_json_path}: {e}")
+        load_config_file(os.path.join(self.config.web_ui_dir, "config", "app.json"))
+        
+        # Read server.json overrides if present (machine-specific)
+        load_config_file(os.path.join(self.config.web_ui_dir, "config", "server.json"))
 
         # Ensure paths are absolute relative to CWD
         self.config.web_ui_dir = os.path.abspath(self.config.web_ui_dir)
@@ -1071,7 +1078,8 @@ class DashServer:
             format="%(asctime)s [%(levelname)s] %(message)s",
         )
 
-        logging.info(f"Configuration loaded: host={self.config.host}, port={self.config.port}")
+        host_display = ", ".join(self.config.host) if isinstance(self.config.host, list) else self.config.host
+        logging.info(f"Configuration loaded: host={host_display}, port={self.config.port}")
         logging.info(f"Project UI: {self.config.web_ui_dir}")
         logging.info(f"Data Dir: {self.config.data_dir}")
 
@@ -1156,7 +1164,8 @@ class DashServer:
             return
 
         # Print summary to console before daemonizing
-        print(f"{BOLD}{BLUE}Starting Control Center on {self.config.host}:{self.config.port}{RESET}")
+        host_display = ", ".join(self.config.host) if isinstance(self.config.host, list) else self.config.host
+        print(f"{BOLD}{BLUE}Starting Control Center on {host_display}:{self.config.port}{RESET}")
         print(f"  {BLUE}Data Dir:{RESET}    {self.config.data_dir}")
         print(f"  {BLUE}Project UI:{RESET}  {self.config.web_ui_dir}")
 
@@ -1335,18 +1344,45 @@ class DashServer:
                 else:
                     logging.warning("Could not determine SSL certificate expiry date.")
 
-        uvicorn.run(
-            app,
-            host=self.config.host,
-            port=self.config.port,
-            log_level="info",
-            access_log=False,
-            log_config=log_config,
-            ssl_keyfile=ssl_keyfile,
-            ssl_certfile=ssl_certfile,
-            http="h11",
-            loop="asyncio"
-        )
+        if isinstance(self.config.host, list):
+            import socket
+            import asyncio
+            
+            sockets = []
+            for h in self.config.host:
+                addr_family = socket.AF_INET6 if ":" in h else socket.AF_INET
+                sock = socket.socket(addr_family, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((h, self.config.port))
+                sock.listen(256)
+                sockets.append(sock)
+                
+            config = uvicorn.Config(
+                app,
+                port=self.config.port,
+                log_level="info",
+                access_log=False,
+                log_config=log_config,
+                ssl_keyfile=ssl_keyfile,
+                ssl_certfile=ssl_certfile,
+                http="h11",
+                loop="asyncio"
+            )
+            server = uvicorn.Server(config)
+            asyncio.run(server.serve(sockets=sockets))
+        else:
+            uvicorn.run(
+                app,
+                host=self.config.host,
+                port=self.config.port,
+                log_level="info",
+                access_log=False,
+                log_config=log_config,
+                ssl_keyfile=ssl_keyfile,
+                ssl_certfile=ssl_certfile,
+                http="h11",
+                loop="asyncio"
+            )
 
     def stop(self, force=False):
         YELLOW = "\033[93m"
