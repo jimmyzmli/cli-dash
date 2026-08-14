@@ -1627,6 +1627,8 @@ class DashServer:
     <string>{working_dir}</string>
     <key>RunAtLoad</key>
     <true/>
+    <key>AbandonProcessGroup</key>
+    <true/>
 </dict>
 </plist>
 """
