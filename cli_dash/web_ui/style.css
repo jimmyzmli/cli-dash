@@ -1133,3 +1133,337 @@ button.warning:hover {
 .toast-error .toast-icon { color: var(--error-color); }
 .toast-warning .toast-icon { color: var(--warning-color); }
 .toast-info .toast-icon { color: var(--accent-color); }
+
+/* Search Modal Styles (VS Code Editor Style) */
+.search-modal-container {
+    width: 85vw;
+    height: 85vh;
+    display: flex;
+    flex-direction: column;
+    background: var(--card-bg);
+}
+
+.search-modal-top-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.search-modal-title {
+    font-size: 0.9rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-secondary);
+}
+
+.search-modal-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.search-modal-body {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+}
+
+.search-modal-sidebar {
+    width: 35%;
+    min-width: 20%;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border-color);
+}
+
+.search-resizer {
+    width: 4px;
+    background-color: transparent;
+    cursor: col-resize;
+    z-index: 10;
+    transition: background-color 0.2s;
+    margin-left: -2px;
+    margin-right: -2px;
+}
+
+.search-resizer:hover, .search-resizer:active {
+    background-color: var(--accent-color);
+}
+
+.search-modal-preview {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-color);
+    overflow: hidden;
+    position: relative;
+}
+
+.preview-navigator {
+    position: absolute;
+    top: 15px;
+    right: 20px;
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    padding: 4px 8px;
+    gap: 8px;
+    z-index: 10;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+.preview-nav-text {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    padding-right: 4px;
+    border-right: 1px solid var(--border-color);
+}
+
+.preview-nav-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    border-radius: 4px;
+}
+
+.preview-nav-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+}
+
+.preview-nav-btn:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+}
+
+.preview-empty, .preview-loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.preview-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 0;
+}
+
+.preview-lines {
+    display: flex;
+    flex-direction: column;
+}
+
+.preview-line {
+    display: flex;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    line-height: 1.5;
+    padding: 0 10px;
+}
+
+.preview-line:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.preview-line-active {
+    background: rgba(88, 166, 255, 0.1) !important;
+}
+
+.preview-line-active .preview-line-num {
+    color: var(--text-primary);
+}
+
+.preview-line-num {
+    color: var(--text-secondary);
+    width: 40px;
+    text-align: right;
+    padding-right: 15px;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.preview-line-text {
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    word-break: break-all;
+    flex: 1;
+}
+
+.preview-line-text mark {
+    background: rgba(234, 92, 0, 0.33);
+    color: var(--text-primary);
+    border-radius: 2px;
+    padding: 0 2px;
+}
+
+.search-modal-header {
+    padding: 15px 20px;
+}
+
+.search-modal-input-wrapper {
+    display: flex;
+    align-items: center;
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 2px 8px;
+    gap: 8px;
+}
+
+.search-modal-input-wrapper:focus-within {
+    border-color: var(--accent-color);
+}
+
+.search-modal-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: var(--text-primary);
+    padding: 6px 0;
+    font-family: var(--font-primary);
+    font-size: 0.95rem;
+}
+
+.search-modal-input:focus {
+    outline: none;
+}
+
+.search-modal-status {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    padding: 0 20px 10px 20px;
+}
+
+.search-modal-results {
+    overflow-y: auto;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 0 10px 10px 10px;
+}
+
+.search-no-results {
+    color: var(--text-secondary);
+    text-align: center;
+    padding: 20px 0;
+}
+
+.search-result-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.search-result-job {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.search-result-chevron, .search-result-terminal-icon, .search-result-match-chevron {
+    display: flex;
+    align-items: center;
+    color: var(--text-secondary);
+}
+
+.search-result-job-cmd {
+    font-family: var(--font-primary);
+    color: var(--text-primary);
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.search-result-job-date {
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+    opacity: 0.7;
+    margin-right: 5px;
+    white-space: nowrap;
+}
+
+.search-result-job-id {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    padding: 0 8px;
+    font-size: 0.75rem;
+    color: var(--text-primary);
+}
+
+.search-result-matches {
+    display: flex;
+    flex-direction: column;
+}
+
+.search-result-match {
+    display: flex;
+    align-items: center;
+    padding: 2px 10px 2px 32px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    gap: 6px;
+}
+
+.search-result-match:hover {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.search-result-match.active {
+    background: rgba(88, 166, 255, 0.2);
+}
+
+.search-result-line-text {
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-all;
+    flex: 1;
+}
+
+.search-result-line-text mark {
+    background: rgba(234, 92, 0, 0.33);
+    color: var(--text-primary);
+    border-radius: 2px;
+    padding: 0 2px;
+}
+
+/* Modal Overlay Styles */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    -webkit-backdrop-filter: blur(4px);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal.card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    padding: 0; /* Changed from 20px to allow inner container to manage padding */
+    margin: 0;
+    overflow: hidden;
+}

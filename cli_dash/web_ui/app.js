@@ -1,6 +1,6 @@
 /* cli-dash Vue 3 app.js */
 ;(function() {
-const { createApp, ref, reactive, computed, onMounted, onUnmounted, nextTick, markRaw } = Vue;
+const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, onUnmounted, nextTick, markRaw } = Vue;
 
 window.dashExtensions = { tabs: [], headerOptions: [], onInit: [] };
 
@@ -430,6 +430,20 @@ const App = {
                     window.dispatchEvent(new Event('refresh-schedules'));
                 }
             });
+
+            window.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && modal.show) {
+                    closeModal();
+                }
+                if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+                    e.preventDefault();
+                    if (modal.show && modal.component === 'LogSearchModal') {
+                        closeModal();
+                    } else {
+                        window.showModalComponent('LogSearchModal');
+                    }
+                }
+            });
         });
 
         const getOptionIcon = (name) => {
@@ -774,12 +788,277 @@ const HistoryView = {
     }
 };
 
+const logSearchState = reactive({
+    query: '',
+    results: [],
+    statusText: '',
+    isSearching: false,
+    selectedMatch: null,
+    previewLoading: false,
+    sidebarWidth: 35
+});
+
+const LogSearchModal = {
+    template: '#tpl-log-search',
+    setup(props, { emit }) {
+        const searchInput = ref(null);
+        const previewContainer = ref(null);
+        let abortController = null;
+        let debounceTimer = null;
+        const historyKey = 'cli-dash-search-history';
+        const searchHistory = ref([]);
+        const historyIndex = ref(-1);
+
+        onMounted(() => {
+            try {
+                const stored = localStorage.getItem(historyKey);
+                if (stored) searchHistory.value = JSON.parse(stored);
+            } catch (e) {}
+            nextTick(() => {
+                if (searchInput.value) {
+                    searchInput.value.focus();
+                }
+            });
+        });
+
+        let historyDebounceTimer = null;
+
+        const saveHistory = (q) => {
+            if (!q) return;
+            if (historyIndex.value >= 0 && searchHistory.value[historyIndex.value] === q) return;
+            const idx = searchHistory.value.indexOf(q);
+            if (idx !== -1) searchHistory.value.splice(idx, 1);
+            searchHistory.value.unshift(q);
+            if (searchHistory.value.length > 50) searchHistory.value.pop();
+            try { localStorage.setItem(historyKey, JSON.stringify(searchHistory.value)); } catch(e){}
+            historyIndex.value = -1;
+        };
+
+        const saveHistoryDebounced = (q) => {
+            if (historyDebounceTimer) clearTimeout(historyDebounceTimer);
+            historyDebounceTimer = setTimeout(() => {
+                saveHistory(q);
+            }, 1500); // Only save if they stop typing for 1.5s
+        };
+
+        const onEnter = () => {
+            if (historyDebounceTimer) clearTimeout(historyDebounceTimer);
+            const q = logSearchState.query.trim();
+            if (q) saveHistory(q);
+        };
+
+        // Also save history when modal unmounts
+        onBeforeUnmount(() => {
+            if (historyDebounceTimer) clearTimeout(historyDebounceTimer);
+            const q = logSearchState.query.trim();
+            if (q) saveHistory(q);
+        });
+
+        const historyUp = () => {
+            if (searchHistory.value.length === 0) return;
+            if (historyIndex.value < searchHistory.value.length - 1) {
+                historyIndex.value++;
+                logSearchState.query = searchHistory.value[historyIndex.value];
+                performSearch();
+            }
+        };
+
+        const historyDown = () => {
+            if (historyIndex.value > 0) {
+                historyIndex.value--;
+                logSearchState.query = searchHistory.value[historyIndex.value];
+                performSearch();
+            } else if (historyIndex.value === 0) {
+                historyIndex.value = -1;
+                logSearchState.query = '';
+                performSearch();
+            }
+        };
+
+        const highlight = (text) => {
+            if (!logSearchState.query) return text;
+            const q = logSearchState.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(`(${q})`, 'gi');
+            let escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            return escaped.replace(regex, '<mark>$1</mark>');
+        };
+
+        const performSearch = async () => {
+            if (!logSearchState.query.trim()) {
+                logSearchState.results = [];
+                logSearchState.statusText = '';
+                logSearchState.selectedMatch = null;
+                return;
+            }
+
+            if (abortController) {
+                abortController.abort();
+            }
+
+            abortController = new AbortController();
+            logSearchState.isSearching = true;
+            logSearchState.results = [];
+            logSearchState.statusText = 'Searching...';
+            let matchCount = 0;
+            saveHistoryDebounced(logSearchState.query.trim());
+
+            try {
+                const response = await fetch(`/api/logs/search?q=${encodeURIComponent(logSearchState.query.trim())}`, {
+                    signal: abortController.signal
+                });
+
+                if (!response.ok) throw new Error('Search failed');
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop();
+
+                    for (const line of lines) {
+                        if (line.trim()) {
+                            try {
+                                const result = JSON.parse(line);
+                                logSearchState.results.push(result);
+                                matchCount += result.matches.length;
+                                logSearchState.statusText = `Found ${matchCount} matches...`;
+                            } catch (e) {
+                                console.error('Error parsing JSON from search stream:', e);
+                            }
+                        }
+                    }
+                }
+                logSearchState.statusText = matchCount > 0 ? `Finished: ${matchCount} matches` : '';
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error('Search error:', error);
+                    logSearchState.statusText = 'Search error occurred.';
+                }
+            } finally {
+                logSearchState.isSearching = false;
+            }
+        };
+
+        const onInput = () => {
+            clearTimeout(debounceTimer);
+            debounceTimer = setTimeout(() => {
+                performSearch();
+            }, 300);
+        };
+
+        const selectMatch = async (jobId, lineNumber) => {
+            if (logSearchState.selectedMatch && logSearchState.selectedMatch.jobId === jobId) {
+                // Same job, just update line number and scroll
+                logSearchState.selectedMatch.lineNumber = lineNumber;
+                nextTick(() => {
+                    const el = document.getElementById('preview-line-' + lineNumber);
+                    if (el && previewContainer.value) {
+                        const containerHeight = previewContainer.value.clientHeight;
+                        const elTop = el.offsetTop;
+                        previewContainer.value.scrollTop = elTop - (containerHeight / 2) + 20;
+                    }
+                });
+                return;
+            }
+
+            logSearchState.selectedMatch = { jobId, lineNumber, fullLog: [] };
+            logSearchState.previewLoading = true;
+            try {
+                const response = await fetch(`/api/job/${jobId}/log`);
+                const data = await response.json();
+                if (data && data.content) {
+                    logSearchState.selectedMatch.fullLog = data.content.split('\n');
+                }
+                logSearchState.previewLoading = false; // Must be false before nextTick so DOM renders
+                
+                nextTick(() => {
+                    const el = document.getElementById('preview-line-' + lineNumber);
+                    if (el && previewContainer.value) {
+                        const containerHeight = previewContainer.value.clientHeight;
+                        const elTop = el.offsetTop;
+                        previewContainer.value.scrollTop = elTop - (containerHeight / 2) + 20;
+                    }
+                });
+            } catch (e) {
+                console.error('Error loading log preview:', e);
+                logSearchState.previewLoading = false;
+            }
+        };
+
+        const matchNavigation = computed(() => {
+            if (!logSearchState.selectedMatch) return null;
+            const jobMatch = logSearchState.results.find(r => r.job_id === logSearchState.selectedMatch.jobId);
+            if (!jobMatch || !jobMatch.matches) return null;
+            
+            const total = jobMatch.matches.length;
+            const currentIndex = jobMatch.matches.findIndex(m => m.line_number === logSearchState.selectedMatch.lineNumber) + 1;
+            
+            return { currentIndex, total, matches: jobMatch.matches };
+        });
+
+        const nextMatch = () => {
+            const nav = matchNavigation.value;
+            if (!nav || nav.currentIndex >= nav.total) return;
+            const nextLineNumber = nav.matches[nav.currentIndex].line_number;
+            selectMatch(logSearchState.selectedMatch.jobId, nextLineNumber);
+        };
+
+        const prevMatch = () => {
+            const nav = matchNavigation.value;
+            if (!nav || nav.currentIndex <= 1) return;
+            const prevLineNumber = nav.matches[nav.currentIndex - 2].line_number;
+            selectMatch(logSearchState.selectedMatch.jobId, prevLineNumber);
+        };
+
+        const formatTime = (ts) => {
+            if (!ts) return '';
+            const d = new Date(ts + 'Z');
+            return d.toLocaleDateString([], { month: 'short', day: 'numeric' }) + ' ' + d.toLocaleTimeString();
+        };
+
+        const startSearchResize = (e) => {
+            e.preventDefault();
+            const startX = e.clientX;
+            const startWidth = logSearchState.sidebarWidth;
+            const containerWidth = document.querySelector('.search-modal-body').offsetWidth;
+
+            const onMouseMove = (e) => {
+                const deltaX = e.clientX - startX;
+                const deltaPercent = (deltaX / containerWidth) * 100;
+                let newWidth = startWidth + deltaPercent;
+                if (newWidth < 20) newWidth = 20;
+                if (newWidth > 80) newWidth = 80;
+                logSearchState.sidebarWidth = newWidth;
+            };
+
+            const onMouseUp = () => {
+                document.removeEventListener('mousemove', onMouseMove);
+                document.removeEventListener('mouseup', onMouseUp);
+                document.body.style.cursor = 'default';
+            };
+
+            document.addEventListener('mousemove', onMouseMove);
+            document.addEventListener('mouseup', onMouseUp);
+            document.body.style.cursor = 'col-resize';
+        };
+
+        return { searchState: logSearchState, searchInput, previewContainer, onInput, selectMatch, highlight, performSearch, formatTime, matchNavigation, nextMatch, prevMatch, startSearchResize, historyUp, historyDown, onEnter };
+    }
+};
+
 // Initialize app when called
 window.initVueApp = function() {
     const app = createApp(App);
     app.component('CommandsView', CommandsView);
     app.component('ScheduledView', ScheduledView);
     app.component('HistoryView', HistoryView);
+    app.component('LogSearchModal', LogSearchModal);
     app.mount('#app');
 };
 

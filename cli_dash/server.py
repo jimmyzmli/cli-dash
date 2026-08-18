@@ -834,6 +834,67 @@ def create_app(config: AppConfig, db: Database):
         return {"content": content, "offset": new_offset,
                 "job_status": job_status, "job_type": job_type}
 
+    @app.get("/api/logs/search")
+    async def search_logs(request: Request, q: str = ""):
+        """
+        Streaming endpoint that searches all job logs for a given query
+        and yields results incrementally as JSON objects separated by newlines.
+        """
+        if not q:
+            return StreamingResponse(iter([]), media_type="application/x-ndjson")
+
+        async def search_generator():
+            try:
+                q_lower = q.lower()
+                jobs = {str(j["id"]): j for j in db.get_jobs(limit=1000)}
+                log_dir = os.path.join(data_dir, "jobs")
+                if not os.path.exists(log_dir):
+                    return
+
+                # Get all log files and sort by job id descending
+                files = []
+                for f in os.listdir(log_dir):
+                    if f.endswith(".log"):
+                        try:
+                            job_id = int(f[:-4])
+                            files.append((job_id, f))
+                        except ValueError:
+                            pass
+                files.sort(key=lambda x: x[0], reverse=True)
+
+                for job_id_int, filename in files:
+                    if await request.is_disconnected():
+                        break
+
+                    log_path = os.path.join(log_dir, filename)
+                    matches = []
+                    try:
+                        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
+                            for i, line in enumerate(f):
+                                if q_lower in line.lower():
+                                    matches.append({"line_number": i + 1, "content": line.strip()})
+                                    if len(matches) > 100:  # limit matches per file
+                                        break
+                    except Exception:
+                        pass
+
+                    if matches:
+                        job = jobs.get(str(job_id_int), {})
+                        result = {
+                            "job_id": job_id_int,
+                            "command": job.get("command", f"Job #{job_id_int}"),
+                            "created_at": job.get("created_at"),
+                            "matches": matches
+                        }
+                        yield json.dumps(result) + "\n"
+                        # Tiny sleep to yield to event loop so we don't block other requests
+                        await asyncio.sleep(0.01)
+
+            except Exception as e:
+                logging.error(f"Error during log search: {e}")
+
+        return StreamingResponse(search_generator(), media_type="application/x-ndjson")
+
     @app.get("/api/events")
     async def sse_events(request: Request):
         """
