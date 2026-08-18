@@ -71,6 +71,11 @@
                 :class="{ active: currentTab === tab.id }" @click="switchTab(tab)">
                 {{ tab.label }}
             </a>
+            <button class="help-tab-link" @click="showSearchModal" title="Search Logs (Ctrl/Cmd + Shift + F)">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
+                    <path d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+                </svg>
+            </button>
             <button class="help-tab-link" @click="showHelpConsole" title="Help / Documentation">
                 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20" height="20">
                     <path
@@ -122,11 +127,8 @@
                         <component v-if="logComponent" :is="logComponent" :job="activeJob"
                             :log-content="consoleContent">
                         </component>
-                        <div id="console" class="console" ref="consoleEl">
-                            <div v-if="!activeJobId" class="placeholder">Select a task to see output...</div>
-                            <template v-else><span v-html="formattedConsoleContent"
-                                    style="white-space: inherit;"></span></template>
-                        </div>
+                        <log-viewer v-if="activeJobId" class="console" id="console" :content="consoleContent" :show-line-numbers="false" :inline-search="true" style="padding:0; border:none; background:transparent;"></log-viewer>
+                        <div v-else class="console placeholder">Select a task to see output...</div>
                     </div>
 
                     <div class="card history-card">
@@ -143,8 +145,8 @@
         <div id="toast-container" class="toast-container"></div>
 
         <!-- Modals -->
-        <div id="modal-overlay" class="modal-overlay" v-show="modal.show" @click="closeModal">
-            <div class="modal card" @click.stop>
+        <div id="modal-overlay" class="modal-overlay" v-show="modal.show" @click.self="closeModal">
+            <div class="modal card">
                 <div v-if="modal.html" v-html="modal.html"></div>
                 <component v-else-if="modal.component" :is="modal.component" v-bind="modal.props" @close="closeModal">
                 </component>
@@ -156,8 +158,9 @@
     <script type="text/x-template" id="tpl-commands">
         <div class="controls">
             <div id="command-cards" style="display:contents">
-                <div class="card" v-for="cat in commandCategories" :key="cat.label || cat.title">
-                    <h2><span class="icon">{{ cat.icon }}</span> {{ cat.title || cat.label }}</h2>
+                <template v-for="(cat, index) in commandCategories" :key="cat?.label || cat?.title || index">
+                    <div class="card" v-if="cat">
+                        <h2 v-if="cat.label || cat.title"><span class="icon" v-if="cat.icon">{{ cat.icon }}</span> {{ cat.title || cat.label }}</h2>
                     <template v-if="cat.commands">
                         <div class="button-group">
                             <div v-for="cmd in cat.commands" :key="cmd.command" class="command-row-entry" @click="filterHistory(cmd.command)">
@@ -193,7 +196,8 @@
                             </div>
                         </div>
                     </template>
-                </div>
+                    </div>
+                </template>
             </div>
             <div class="card">
                 <h2><span class="icon">⌨️</span> Custom Command</h2>
@@ -361,8 +365,13 @@
             <div class="search-modal-body">
                 <div class="search-modal-sidebar" :style="{ width: searchState.sidebarWidth + '%' }">
                     <div class="search-modal-header">
-                        <div class="search-modal-input-wrapper">
-                            <input type="text" v-model="searchState.query" @input="onInput" placeholder="Search logs..." ref="searchInput" class="search-modal-input" @keyup.esc="$emit('close')" @keydown.up.prevent="historyUp" @keydown.down.prevent="historyDown" @keydown.enter.prevent="onEnter">
+                        <div class="search-modal-input-wrapper" style="position: relative; display: flex; align-items: center;">
+                            <input type="text" v-model="searchState.query" @input="onInput" placeholder="Search logs..." ref="searchInput" class="search-modal-input" style="padding-right: 80px;" @keyup.esc="$emit('close')" @keydown.up.prevent="historyUp" @keydown.down.prevent="historyDown" @keydown.enter.prevent="onEnter">
+                            <div class="search-toggles" style="position: absolute; right: 10px;">
+                                <span :class="{'is-active': searchState.matchCase}" @click="searchState.matchCase = !searchState.matchCase; performSearch()" title="Match Case">Aa</span>
+                                <span :class="{'is-active': searchState.matchWord}" @click="searchState.matchWord = !searchState.matchWord; performSearch()" title="Match Whole Word" style="text-decoration: underline; text-underline-offset: 2px;">ab</span>
+                                <span :class="{'is-active': searchState.useRegex}" @click="searchState.useRegex = !searchState.useRegex; performSearch()" title="Use Regular Expression">.*</span>
+                            </div>
                         </div>
                     </div>
                     <div class="search-modal-status" v-if="searchState.statusText">{{ searchState.statusText }}</div>
@@ -414,14 +423,49 @@
                             </button>
                         </div>
                         <div v-if="searchState.previewLoading" class="preview-loading">Loading preview...</div>
-                        <div v-else class="preview-lines">
-                            <div v-for="(line, i) in searchState.selectedMatch.fullLog" :key="i" class="preview-line" :class="{ 'preview-line-active': searchState.selectedMatch.lineNumber === i + 1 }" :id="'preview-line-' + (i + 1)">
-                                <span class="preview-line-num">{{ i + 1 }}</span>
-                                <span class="preview-line-text" v-html="highlight(line)"></span>
-                            </div>
-                        </div>
+                        <log-viewer v-else :content="searchState.selectedMatch.fullLog" :search-query="searchState.query" :active-line="searchState.selectedMatch.lineNumber" :show-line-numbers="true"></log-viewer>
                     </div>
                     <div v-else class="preview-empty">Select a match to preview</div>
+                </div>
+            </div>
+        </div>
+    </script>
+    
+    <script type="text/x-template" id="tpl-log-viewer">
+        <div class="log-viewer-container" style="position: relative; display: flex; flex-direction: column; height: 100%; flex: 1; overflow: hidden;">
+            <div class="log-viewer-inline-search" v-show="showInlineSearchBox" :class="{'is-focused': isSearchFocused}">
+                <div class="inline-search-input-wrapper">
+                    <input type="text" ref="searchInputRef" v-model="localSearchQuery" placeholder="Find" class="inline-search-input" 
+                        @keydown.esc="closeInlineSearch" 
+                        @keydown.enter.prevent="onSearchEnter"
+                        @focus="isSearchFocused = true" 
+                        @blur="isSearchFocused = false">
+                    
+                    <div class="search-toggles">
+                        <span :class="{'is-active': localMatchCase}" @click="localMatchCase = !localMatchCase" title="Match Case">Aa</span>
+                        <span :class="{'is-active': localMatchWord}" @click="localMatchWord = !localMatchWord" title="Match Whole Word" style="text-decoration: underline; text-underline-offset: 2px;">ab</span>
+                        <span :class="{'is-active': localUseRegex}" @click="localUseRegex = !localUseRegex" title="Use Regular Expression">.*</span>
+                    </div>
+                </div>
+
+                <div class="search-results-info">
+                    <span v-if="localSearchQuery && inlineMatches.length > 0">{{ currentInlineMatchIndex + 1 }} of {{ inlineMatches.length }}</span>
+                    <span v-else-if="localSearchQuery" style="font-size: 0.75rem; letter-spacing: -0.2px;">No results</span>
+                </div>
+                
+                <div class="search-nav-actions">
+                    <button @click="prevInlineMatch" class="icon-btn" :disabled="!inlineMatches.length" title="Previous Match (Shift+Enter)">↑</button>
+                    <button @click="nextInlineMatch" class="icon-btn" :disabled="!inlineMatches.length" title="Next Match (Enter)">↓</button>
+                    <button @click="closeInlineSearch" class="icon-btn" title="Close (Esc)">✕</button>
+                </div>
+            </div>
+            <div class="log-viewer" ref="viewerRef">
+                <div v-if="parsedLines.length === 0" class="placeholder">No output captured.</div>
+                <div v-else class="preview-lines">
+                    <div v-for="line in parsedLines" :key="line.number" class="preview-line" :class="{ 'preview-line-active': activeLine === line.number }" :id="'lv-line-' + line.number">
+                        <span v-if="showLineNumbers" class="preview-line-num">{{ line.number }}</span>
+                        <span class="preview-line-text" v-html="line.html" style="white-space: inherit;"></span>
+                    </div>
                 </div>
             </div>
         </div>

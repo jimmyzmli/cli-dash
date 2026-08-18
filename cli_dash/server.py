@@ -835,7 +835,7 @@ def create_app(config: AppConfig, db: Database):
                 "job_status": job_status, "job_type": job_type}
 
     @app.get("/api/logs/search")
-    async def search_logs(request: Request, q: str = ""):
+    async def search_logs(request: Request, q: str = "", match_case: bool = False, match_word: bool = False, use_regex: bool = False):
         """
         Streaming endpoint that searches all job logs for a given query
         and yields results incrementally as JSON objects separated by newlines.
@@ -844,8 +844,19 @@ def create_app(config: AppConfig, db: Database):
             return StreamingResponse(iter([]), media_type="application/x-ndjson")
 
         async def search_generator():
+            import re
             try:
-                q_lower = q.lower()
+                flags = 0 if match_case else re.IGNORECASE
+                pattern = q if use_regex else re.escape(q)
+                if match_word:
+                    pattern = r'\b' + pattern + r'\b'
+                
+                try:
+                    compiled_regex = re.compile(pattern, flags)
+                except re.error:
+                    yield json.dumps({"error": "Invalid regular expression"}) + "\n"
+                    return
+
                 jobs = {str(j["id"]): j for j in db.get_jobs(limit=1000)}
                 log_dir = os.path.join(data_dir, "jobs")
                 if not os.path.exists(log_dir):
@@ -871,7 +882,7 @@ def create_app(config: AppConfig, db: Database):
                     try:
                         with open(log_path, "r", encoding="utf-8", errors="replace") as f:
                             for i, line in enumerate(f):
-                                if q_lower in line.lower():
+                                if compiled_regex.search(line):
                                     matches.append({"line_number": i + 1, "content": line.strip()})
                                     if len(matches) > 100:  # limit matches per file
                                         break

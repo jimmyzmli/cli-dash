@@ -1,6 +1,6 @@
 /* cli-dash Vue 3 app.js */
 ;(function() {
-const { createApp, ref, reactive, computed, onMounted, onBeforeUnmount, onUnmounted, nextTick, markRaw } = Vue;
+const { createApp, ref, reactive, computed, watch, onMounted, onBeforeUnmount, onUnmounted, nextTick, markRaw } = Vue;
 
 window.dashExtensions = { tabs: [], headerOptions: [], onInit: [] };
 
@@ -81,6 +81,232 @@ window.getQueueColor = function(name) {
     return DEFAULT_PALETTE[index];
 };
 
+const LogViewer = {
+    template: '#tpl-log-viewer',
+    props: {
+        content: { type: [String, Array], required: true },
+        searchQuery: { type: String, default: '' },
+        activeLine: { type: Number, default: null },
+        showLineNumbers: { type: Boolean, default: false },
+        inlineSearch: { type: Boolean, default: false }
+    },
+    setup(props) {
+        const viewerRef = ref(null);
+        const searchInputRef = ref(null);
+        const localSearchQuery = ref('');
+        const showInlineSearchBox = ref(false);
+        
+        const localMatchCase = ref(false);
+        const localMatchWord = ref(false);
+        const localUseRegex = ref(false);
+
+        const currentMatchCase = computed(() => props.inlineSearch ? localMatchCase.value : false);
+        const currentMatchWord = computed(() => props.inlineSearch ? localMatchWord.value : false);
+        const currentUseRegex = computed(() => props.inlineSearch ? localUseRegex.value : false);
+
+        onMounted(() => {
+            if (props.inlineSearch) {
+                window.addEventListener('focus-inline-search', onFocusInlineSearch);
+            }
+        });
+
+        onBeforeUnmount(() => {
+            if (props.inlineSearch) {
+                window.removeEventListener('focus-inline-search', onFocusInlineSearch);
+            }
+        });
+
+        const onFocusInlineSearch = () => {
+            showInlineSearchBox.value = true;
+            nextTick(() => {
+                if (searchInputRef.value) searchInputRef.value.focus();
+            });
+        };
+
+        const isSearchFocused = ref(false);
+        const currentInlineMatchIndex = ref(0);
+
+        const inlineMatches = computed(() => {
+            if (!showInlineSearchBox.value || !localSearchQuery.value) return [];
+            const q = localSearchQuery.value.toLowerCase();
+            const matches = [];
+            const rawLines = Array.isArray(props.content) ? props.content : typeof props.content === 'string' ? props.content.split('\n') : [];
+            
+            try {
+                let pattern = currentUseRegex.value ? q : q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                if (currentMatchWord.value) pattern = `\\b${pattern}\\b`;
+                const flags = currentMatchCase.value ? 'g' : 'gi';
+                const regex = new RegExp(pattern, flags);
+                
+                rawLines.forEach((line, index) => {
+                    let count = 0;
+                    let match;
+                    regex.lastIndex = 0;
+                    while ((match = regex.exec(line)) !== null) {
+                        count++;
+                        if (match[0].length === 0) {
+                            regex.lastIndex++;
+                        }
+                    }
+                    for(let i = 0; i < count; i++) {
+                        matches.push(index + 1);
+                    }
+                });
+            } catch (e) {}
+            return matches;
+        });
+
+        watch(inlineMatches, (newMatches) => {
+            if (newMatches.length === 0) {
+                currentInlineMatchIndex.value = 0;
+            } else if (currentInlineMatchIndex.value >= newMatches.length) {
+                currentInlineMatchIndex.value = newMatches.length - 1;
+            }
+            scrollToCurrentInlineMatch();
+        });
+
+        const scrollToCurrentInlineMatch = () => {
+            if (!inlineMatches.value.length || !viewerRef.value) return;
+            const lineNum = inlineMatches.value[currentInlineMatchIndex.value];
+            nextTick(() => {
+                const el = viewerRef.value.querySelector('#lv-line-' + lineNum);
+                if (el) {
+                    const containerHeight = viewerRef.value.clientHeight;
+                    viewerRef.value.scrollTop = el.offsetTop - (containerHeight / 2) + 20;
+                }
+            });
+        };
+
+        const nextInlineMatch = () => {
+            if (!inlineMatches.value.length) return;
+            currentInlineMatchIndex.value = (currentInlineMatchIndex.value + 1) % inlineMatches.value.length;
+            scrollToCurrentInlineMatch();
+        };
+
+        const prevInlineMatch = () => {
+            if (!inlineMatches.value.length) return;
+            currentInlineMatchIndex.value = (currentInlineMatchIndex.value - 1 + inlineMatches.value.length) % inlineMatches.value.length;
+            scrollToCurrentInlineMatch();
+        };
+
+        const onSearchEnter = (e) => {
+            if (e.shiftKey) {
+                prevInlineMatch();
+            } else {
+                nextInlineMatch();
+            }
+        };
+
+        const closeInlineSearch = () => {
+            showInlineSearchBox.value = false;
+            localSearchQuery.value = '';
+        };
+
+        const parsedLines = computed(() => {
+            let rawLines = [];
+            if (Array.isArray(props.content)) {
+                rawLines = props.content;
+            } else if (typeof props.content === 'string') {
+                rawLines = props.content.split('\n');
+            }
+            if (rawLines.length > 0 && rawLines[rawLines.length - 1] === '') {
+                rawLines.pop();
+            }
+
+            const effectiveQuery = props.inlineSearch ? localSearchQuery.value : props.searchQuery;
+            let regex = null;
+            if (effectiveQuery) {
+                try {
+                    // For parsedLines, if it's inlineSearch we use local toggles. 
+                    // If not, we don't apply regex here because the global search result already matched.
+                    // Actually, global search doesn't pass regex toggles to LogViewer right now (would require prop drilling).
+                    // We'll just assume case-insensitive literal match for global search highlights inside LogViewer.
+                    let isRegex = props.inlineSearch ? currentUseRegex.value : false;
+                    let isWord = props.inlineSearch ? currentMatchWord.value : false;
+                    let isCase = props.inlineSearch ? currentMatchCase.value : false;
+
+                    let pattern = isRegex ? effectiveQuery : effectiveQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    if (isWord) pattern = `\\b${pattern}\\b`;
+                    const flags = isCase ? 'g' : 'gi';
+                    regex = new RegExp(`(${pattern})`, flags);
+                } catch(e) {}
+            }
+            const urlRegex = /\b((?:https?|ftp|file):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|]|magnet:\?[^\s"'<>]+)/gi;
+
+            return rawLines.map((line, index) => {
+                const parts = [];
+                let lastIndex = 0;
+                let match;
+                urlRegex.lastIndex = 0;
+                
+                while ((match = urlRegex.exec(line)) !== null) {
+                    if (match.index > lastIndex) {
+                        parts.push({ text: line.slice(lastIndex, match.index), isUrl: false });
+                    }
+                    parts.push({ text: match[0], isUrl: true });
+                    lastIndex = urlRegex.lastIndex;
+                }
+                if (lastIndex < line.length) {
+                    parts.push({ text: line.slice(lastIndex), isUrl: false });
+                }
+                
+                let html = '';
+                parts.forEach(part => {
+                    const el = document.createElement('div');
+                    el.innerText = part.text;
+                    let partHtml = el.innerHTML;
+                    
+                    if (regex) {
+                        partHtml = partHtml.replace(regex, '<mark>$1</mark>');
+                    }
+                    
+                    if (part.isUrl) {
+                        const cleanHref = part.text.replace(/"/g, '&quot;');
+                        html += `<a href="${cleanHref}" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: underline;">${partHtml}</a>`;
+                    } else {
+                        html += partHtml;
+                    }
+                });
+
+                return {
+                    number: index + 1,
+                    html: html || ' '
+                };
+            });
+        });
+
+        watch(() => props.activeLine, (newLine) => {
+            if (newLine && viewerRef.value) {
+                nextTick(() => {
+                    const el = viewerRef.value.querySelector('#lv-line-' + newLine);
+                    if (el) {
+                        const containerHeight = viewerRef.value.clientHeight;
+                        viewerRef.value.scrollTop = el.offsetTop - (containerHeight / 2) + 20;
+                    }
+                });
+            }
+        });
+
+        watch(() => props.content, (newVal, oldVal) => {
+            if (props.activeLine) return;
+            if (viewerRef.value) {
+                const con = viewerRef.value;
+                const isInitialLoad = !oldVal || oldVal.length === 0;
+                const atBottom = con.scrollHeight - con.scrollTop <= con.clientHeight + 50;
+                if (isInitialLoad || atBottom) {
+                    nextTick(() => { con.scrollTop = con.scrollHeight; });
+                }
+            }
+        });
+
+        return { 
+            parsedLines, viewerRef, localSearchQuery, showInlineSearchBox, searchInputRef, closeInlineSearch,
+            isSearchFocused, inlineMatches, currentInlineMatchIndex, nextInlineMatch, prevInlineMatch, onSearchEnter,
+            localMatchCase, localMatchWord, localUseRegex
+        };
+    }
+};
+
 // Define Vue app
 const App = {
     setup() {
@@ -100,17 +326,6 @@ const App = {
         const activeJobLabel = ref('');
         const activeJob = ref(null);
         const consoleContent = ref('');
-        
-        const formattedConsoleContent = computed(() => {
-            if (!consoleContent.value) return '';
-            const el = document.createElement('div');
-            el.innerText = consoleContent.value;
-            let html = el.innerHTML;
-            const urlRegex = /\b((?:https?|ftp|file):\/\/[-A-Z0-9+&@#\/%?=~_|!:,.;]*[-A-Z0-9+&@#\/%=~_|]|magnet:\?[^\s"'<>]+)/gi;
-            return html.replace(urlRegex, (match) => {
-                return `<a href="${match}" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: underline;">${match}</a>`;
-            });
-        });
 
         const logComponent = ref(null);
         
@@ -437,14 +652,25 @@ const App = {
                 }
                 if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
                     e.preventDefault();
-                    if (modal.show && modal.component === 'LogSearchModal') {
-                        closeModal();
+                    if (e.shiftKey) {
+                        if (modal.show && modal.component === 'LogSearchModal') {
+                            closeModal();
+                        } else {
+                            window.showModalComponent('LogSearchModal');
+                        }
                     } else {
-                        window.showModalComponent('LogSearchModal');
+                        // Focus inline search instead of showing modal
+                        if (activeJobId.value) {
+                            window.dispatchEvent(new Event('focus-inline-search'));
+                        }
                     }
                 }
             });
         });
+
+        const showSearchModal = () => {
+            window.showModalComponent('LogSearchModal');
+        };
 
         const getOptionIcon = (name) => {
             const icons = {
@@ -479,7 +705,7 @@ const App = {
             appConfig, mcpServers, connected, headerState, allHeaderOptions, saveHeaderState,
             tabs, currentTab, switchTab, activeTabComponent, monitorHidden,
             showMonitor, isSwiping, onTouchStart, onTouchMove, onTouchEnd, startResize,
-            activeJobId, activeJobLabel, activeJob, consoleContent, formattedConsoleContent, closeConsole, copyLogPath, copyCommand, showHelpConsole,
+            activeJobId, activeJobLabel, activeJob, consoleContent, closeConsole, copyLogPath, copyCommand, showHelpConsole, showSearchModal,
             modal, closeModal, logComponent, getOptionIcon, toggleHeaderOption, restartService
         };
     }
@@ -790,6 +1016,9 @@ const HistoryView = {
 
 const logSearchState = reactive({
     query: '',
+    matchCase: false,
+    matchWord: false,
+    useRegex: false,
     results: [],
     statusText: '',
     isSearching: false,
@@ -877,10 +1106,16 @@ const LogSearchModal = {
 
         const highlight = (text) => {
             if (!logSearchState.query) return text;
-            const q = logSearchState.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-            const regex = new RegExp(`(${q})`, 'gi');
-            let escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            return escaped.replace(regex, '<mark>$1</mark>');
+            try {
+                let pattern = logSearchState.useRegex ? logSearchState.query : logSearchState.query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                if (logSearchState.matchWord) pattern = `\\b${pattern}\\b`;
+                const flags = logSearchState.matchCase ? 'g' : 'gi';
+                const regex = new RegExp(`(${pattern})`, flags);
+                let escaped = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                return escaped.replace(regex, '<mark>$1</mark>');
+            } catch (e) {
+                return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            }
         };
 
         const performSearch = async () => {
@@ -903,7 +1138,8 @@ const LogSearchModal = {
             saveHistoryDebounced(logSearchState.query.trim());
 
             try {
-                const response = await fetch(`/api/logs/search?q=${encodeURIComponent(logSearchState.query.trim())}`, {
+                const url = `/api/logs/search?q=${encodeURIComponent(logSearchState.query.trim())}&match_case=${logSearchState.matchCase}&match_word=${logSearchState.matchWord}&use_regex=${logSearchState.useRegex}`;
+                const response = await fetch(url, {
                     signal: abortController.signal
                 });
 
@@ -954,37 +1190,21 @@ const LogSearchModal = {
 
         const selectMatch = async (jobId, lineNumber) => {
             if (logSearchState.selectedMatch && logSearchState.selectedMatch.jobId === jobId) {
-                // Same job, just update line number and scroll
+                // Same job, just update line number
                 logSearchState.selectedMatch.lineNumber = lineNumber;
-                nextTick(() => {
-                    const el = document.getElementById('preview-line-' + lineNumber);
-                    if (el && previewContainer.value) {
-                        const containerHeight = previewContainer.value.clientHeight;
-                        const elTop = el.offsetTop;
-                        previewContainer.value.scrollTop = elTop - (containerHeight / 2) + 20;
-                    }
-                });
                 return;
             }
 
             logSearchState.selectedMatch = { jobId, lineNumber, fullLog: [] };
             logSearchState.previewLoading = true;
             try {
-                const response = await fetch(`/api/job/${jobId}/log`);
+                const response = await fetch(`/api/job/${jobId}/log?offset=0&limit=0`);
+                if (!response.ok) throw new Error('Failed to load log');
                 const data = await response.json();
-                if (data && data.content) {
+                if (data.content) {
                     logSearchState.selectedMatch.fullLog = data.content.split('\n');
                 }
                 logSearchState.previewLoading = false; // Must be false before nextTick so DOM renders
-                
-                nextTick(() => {
-                    const el = document.getElementById('preview-line-' + lineNumber);
-                    if (el && previewContainer.value) {
-                        const containerHeight = previewContainer.value.clientHeight;
-                        const elTop = el.offsetTop;
-                        previewContainer.value.scrollTop = elTop - (containerHeight / 2) + 20;
-                    }
-                });
             } catch (e) {
                 console.error('Error loading log preview:', e);
                 logSearchState.previewLoading = false;
@@ -1058,6 +1278,8 @@ window.initVueApp = function() {
     app.component('CommandsView', CommandsView);
     app.component('ScheduledView', ScheduledView);
     app.component('HistoryView', HistoryView);
+    app.component('history-view', HistoryView);
+    app.component('log-viewer', LogViewer);
     app.component('LogSearchModal', LogSearchModal);
     app.mount('#app');
 };
