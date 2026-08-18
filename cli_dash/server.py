@@ -114,6 +114,7 @@ class AppConfig:
     on_startup: Optional[Callable] = None
     schedules_file: Optional[str] = None  # Path to schedules.json for seeding
     ssl_dir: Optional[str] = None  # Directory containing cert.pem, privkey.pem, etc.
+    bind_retries: int = 0  # Number of times to retry socket bind (Errno 49)
 
 
 def _get_package_web_ui() -> str:
@@ -1045,6 +1046,8 @@ class DashServer:
                             self.config.extra_env.update(app_data["env"])
                         if "ssl_dir" in app_data:
                             self.config.ssl_dir = app_data["ssl_dir"]
+                        if "bind_retries" in app_data:
+                            self.config.bind_retries = int(app_data["bind_retries"])
                 except Exception as e:
                     logging.error(f"Failed to read {filepath}: {e}")
 
@@ -1347,13 +1350,26 @@ class DashServer:
         if isinstance(self.config.host, list):
             import socket
             import asyncio
+            import time
             
             sockets = []
             for h in self.config.host:
                 addr_family = socket.AF_INET6 if ":" in h else socket.AF_INET
                 sock = socket.socket(addr_family, socket.SOCK_STREAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind((h, self.config.port))
+                
+                max_retries = max(1, self.config.bind_retries + 1)
+                for attempt in range(max_retries):
+                    try:
+                        sock.bind((h, self.config.port))
+                        break
+                    except OSError as e:
+                        if e.errno == 49 and attempt < max_retries - 1:
+                            logging.warning(f"Could not bind to {h}:{self.config.port} (Errno 49). Retrying in 2s...")
+                            time.sleep(2)
+                        else:
+                            raise
+                            
                 sock.listen(256)
                 sockets.append(sock)
                 
