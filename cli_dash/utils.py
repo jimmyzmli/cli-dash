@@ -1,6 +1,39 @@
 from datetime import datetime, timedelta
 from typing import Optional
 
+
+def get_env(extra_env: Optional[dict] = None) -> dict:
+    """
+    Construct a clean execution environment with Python executable dir
+    prepended to PATH and any extra_env merged.
+    """
+    import os
+    import sys
+
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+
+    # Prepend virtualenv / Python binary directory to PATH
+    sys_exe_dir = os.path.dirname(sys.executable)
+    if sys_exe_dir:
+        path_val = env.get("PATH", "")
+        env["PATH"] = f"{sys_exe_dir}{os.pathsep}{path_val}" if path_val else sys_exe_dir
+
+    if extra_env:
+        for k, v in extra_env.items():
+            if v is not None:
+                if k == "PATH":
+                    # Prepend custom PATH (e.g. from server.json)
+                    expanded = os.path.expanduser(str(v))
+                    curr = env.get("PATH", "")
+                    env["PATH"] = f"{expanded}{os.pathsep}{curr}" if curr else expanded
+                else:
+                    env[k] = str(v)
+
+    return env
+
+
 def get_next_cron_run(cron_expr: str, base_time: datetime) -> datetime:
     """
     Calculate the next run time for a cron expression, supporting L (last) extensions.
@@ -50,3 +83,4 @@ def get_next_cron_run(cron_expr: str, base_time: datetime) -> datetime:
 
     # 3. Native croniter (handles L in DOM automatically)
     return croniter(cron_expr, base_time).get_next(datetime)
+

@@ -12,13 +12,15 @@ import json
 import logging
 import threading
 import asyncio
+import shutil
+import plistlib
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional, List, Union
 
 from cli_dash.database import Database, NOT_SET
-from cli_dash.utils import get_next_cron_run
+from cli_dash.utils import get_next_cron_run, get_env
 
 
 def rotate_log_if_needed(log_path: str, max_lines: int = 1000):
@@ -209,20 +211,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
     log_path = os.path.join(log_dir, f"{job_id}.log")
 
     try:
-        env = os.environ.copy()
-        env["PYTHONUNBUFFERED"] = "1"
-        env["PYTHONIOENCODING"] = "utf-8"
-        sys_exe_dir = os.path.dirname(sys.executable)
-        if sys_exe_dir:
-            path_val = env.get("PATH", "")
-            if path_val:
-                env["PATH"] = sys_exe_dir + os.pathsep + path_val
-            else:
-                env["PATH"] = sys_exe_dir
-        if extra_env:
-            for k, v in extra_env.items():
-                if v is not None:
-                    env[k] = str(v)
+        env = get_env(extra_env)
 
         with open(log_path, "w", encoding="utf-8") as log_file:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -461,7 +450,7 @@ def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
 
 _service_processes = {}
 
-def _service_manager_loop(services_config_path: str, log_dir: str):
+def _service_manager_loop(services_config_path: str, log_dir: str, extra_env: Optional[dict] = None):
     """Spawns and monitors long-running child processes defined in services.json."""
     import subprocess
     import time
@@ -487,10 +476,19 @@ def _service_manager_loop(services_config_path: str, log_dir: str):
                     cmd = srv.get("command", "")
                     if not cmd:
                         continue
+                    cmd = os.path.expanduser(cmd) if isinstance(cmd, str) and cmd.startswith("~") else str(cmd)
                     args_list = srv.get("args", [])
                     args_list = [os.path.expanduser(a) if isinstance(a, str) and a.startswith("~") else str(a) for a in args_list]
                     
-                    full_cmd = [cmd] + args_list
+                    combined_env = {}
+                    if extra_env:
+                        combined_env.update(extra_env)
+                    if "env" in srv and isinstance(srv["env"], dict):
+                        combined_env.update(srv["env"])
+                        
+                    env = get_env(combined_env)
+                    resolved_cmd = shutil.which(cmd, path=env.get("PATH")) or cmd
+                    full_cmd = [resolved_cmd] + args_list
                     
                     proc = _service_processes.get(name)
                     if proc is None or proc.poll() is not None:
@@ -498,10 +496,6 @@ def _service_manager_loop(services_config_path: str, log_dir: str):
                             logging.warning(f"Service '{name}' exited with code {proc.returncode}. Restarting...")
                         else:
                             logging.info(f"Starting service '{name}'...")
-                        
-                        env = os.environ.copy()
-                        if "env" in srv:
-                            env.update(srv["env"])
                             
                         log_path = os.path.join(log_dir, f"service-{name}.log")
                         rotate_log_if_needed(log_path)
@@ -731,20 +725,7 @@ def create_app(config: AppConfig, db: Database):
             return {"content": "No help command configured."}
         
         try:
-            env = os.environ.copy()
-            env["PYTHONUNBUFFERED"] = "1"
-            env["PYTHONIOENCODING"] = "utf-8"
-            sys_exe_dir = os.path.dirname(sys.executable)
-            if sys_exe_dir:
-                path_val = env.get("PATH", "")
-                if path_val:
-                    env["PATH"] = sys_exe_dir + os.pathsep + path_val
-                else:
-                    env["PATH"] = sys_exe_dir
-            if config.extra_env:
-                for k, v in config.extra_env.items():
-                    if v is not None:
-                        env[k] = str(v)
+            env = get_env(config.extra_env)
             
             res = subprocess.run(
                 help_cmd,
@@ -1161,6 +1142,9 @@ class DashServer:
         self.pid_file = os.path.join(self.config.data_dir, "web-ui.pid")
         self.db = Database(db_path=os.path.join(self.config.data_dir, "web-ui.sqlite"))
 
+        # Ensure PATH is active process-wide
+        os.environ["PATH"] = get_env(self.config.extra_env)["PATH"]
+
     def is_running(self):
         if os.path.exists(self.pid_file):
             try:
@@ -1374,7 +1358,7 @@ class DashServer:
             if os.path.exists(services_config_path):
                 svc_thread = threading.Thread(
                     target=_service_manager_loop,
-                    args=(services_config_path, self.config.log_dir),
+                    args=(services_config_path, self.config.log_dir, self.config.extra_env),
                     daemon=True,
                 )
                 svc_thread.start()
@@ -1697,31 +1681,28 @@ class DashServer:
             # Ensure we use absolute path for the server script
             server_script = os.path.abspath(sys.argv[0])
             working_dir = os.getcwd()
-            
-            plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{python_exe}</string>
-        <string>{server_script}</string>
-        <string>-s</string>
-        <string>restart</string>
-    </array>
-    <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>AbandonProcessGroup</key>
-    <true/>
-</dict>
-</plist>
-"""
-            with open(plist_path, "w") as f:
-                f.write(plist_content)
+            env_from_config = get_env(self.config.extra_env)
+            env_vars = {"PATH": env_from_config["PATH"]}
+            if self.config.extra_env:
+                for k, v in self.config.extra_env.items():
+                    if k != "PATH" and v is not None:
+                        env_vars[k] = str(v)
+
+            plist_data = {
+                "Label": label,
+                "ProgramArguments": [
+                    python_exe,
+                    server_script,
+                    "-s",
+                    "restart",
+                ],
+                "WorkingDirectory": working_dir,
+                "RunAtLoad": True,
+                "AbandonProcessGroup": True,
+                "EnvironmentVariables": env_vars,
+            }
+            with open(plist_path, "wb") as f:
+                plistlib.dump(plist_data, f)
             
             # 3. Load it
             subprocess.run(["launchctl", "unload", plist_path], stderr=subprocess.DEVNULL)
