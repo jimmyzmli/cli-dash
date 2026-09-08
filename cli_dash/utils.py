@@ -84,3 +84,40 @@ def get_next_cron_run(cron_expr: str, base_time: datetime) -> datetime:
     # 3. Native croniter (handles L in DOM automatically)
     return croniter(cron_expr, base_time).get_next(datetime)
 
+
+def rotate_log_if_needed(log_path: str, max_lines: int = 1000):
+    """Rotates the log file if it exceeds max_lines, keeping all backups."""
+    import os
+    import glob
+    import shutil
+    import logging
+
+    if not os.path.exists(log_path):
+        return
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            lines = sum(1 for _ in f)
+        if lines >= max_lines:
+            backups = glob.glob(f"{log_path}.*")
+            indices = []
+            for b in backups:
+                try:
+                    indices.append(int(b.split('.')[-1]))
+                except ValueError:
+                    pass
+            max_idx = max(indices) if indices else 0
+            for i in range(max_idx, 0, -1):
+                old_log = f"{log_path}.{i}"
+                new_log = f"{log_path}.{i+1}"
+                if os.path.exists(old_log):
+                    try:
+                        os.replace(old_log, new_log)
+                    except OSError:
+                        pass
+            shutil.copy2(log_path, f"{log_path}.1")
+            with open(log_path, "w", encoding="utf-8") as f:
+                pass
+    except Exception as e:
+        logging.error(f"Error rotating log {log_path}: {e}")
+
+

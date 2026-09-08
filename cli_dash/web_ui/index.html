@@ -32,11 +32,14 @@
                 </div>
                 <div style="display: flex; justify-content: flex-end; align-items: center; gap: 15px;">
                     <div class="status-indicator" v-for="srv in mcpServers" :key="srv.name"
-                        :title="'Port: ' + srv.port + (srv.pid ? ' | PID: ' + srv.pid : '')">
+                        :title="'Port: ' + srv.port + (srv.pid ? ' | PID: ' + srv.pid : '') + (srv.status ? ' | Status: ' + srv.status : '')">
                         <span class="status-dot"
-                            style="background-color: var(--success-color); box-shadow: 0 0 8px var(--success-color)"></span>
+                            :style="{
+                                backgroundColor: srv.status === 'healthy' ? 'var(--success-color)' : (srv.status === 'starting' ? 'var(--warning-color)' : 'var(--error-color)'),
+                                boxShadow: '0 0 8px ' + (srv.status === 'healthy' ? 'var(--success-color)' : (srv.status === 'starting' ? 'var(--warning-color)' : 'var(--error-color)'))
+                            }"></span>
                         <span>{{ srv.name }}</span>
-                        <button class="icon-btn" @click="restartService(srv.name)" title="Restart Service"
+                        <button class="icon-btn" @click="restartService(srv.name)" :title="srv.status === 'stopped' ? 'Start Service' : 'Restart Service'"
                             style="margin-left: 5px; cursor: pointer; padding: 2px;">
                             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14"
                                 height="14">

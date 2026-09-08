@@ -591,10 +591,23 @@ const App = {
             localStorage.setItem(id, headerState[id]);
         };
 
+        const fetchConfig = async () => {
+            try {
+                const r = await fetch('/api/config');
+                if (r.ok) {
+                    const d = await r.json();
+                    if (d.title) document.title = d.title;
+                    if (d.mcp_servers) mcpServers.value = d.mcp_servers;
+                }
+            } catch(e) {}
+        };
+
+        let configInterval = null;
         onMounted(async () => {
             // Load app config
             try { const r = await fetch('/static/config/app.json'); if (r.ok) appConfig.value = await r.json(); } catch(e){}
-            try { const r = await fetch('/api/config'); if (r.ok) { const d = await r.json(); if(d.title) document.title = d.title; if(d.mcp_servers) mcpServers.value = d.mcp_servers; } } catch(e){}
+            await fetchConfig();
+            configInterval = setInterval(fetchConfig, 10000);
             try {
                 const r = await fetch(`/static/config/commands.json?t=${Date.now()}`);
                 if (r.ok) {
@@ -668,6 +681,10 @@ const App = {
             });
         });
 
+        onUnmounted(() => {
+            if (configInterval) clearInterval(configInterval);
+        });
+
         const showSearchModal = () => {
             window.showModalComponent('LogSearchModal');
         };
@@ -688,16 +705,23 @@ const App = {
         };
 
         const restartService = async (name) => {
+            const srv = mcpServers.value.find(s => s.name === name);
+            if (srv) srv.status = 'starting';
             try {
                 const r = await fetch(`/api/services/${encodeURIComponent(name)}/restart`, { method: 'POST' });
                 if (r.ok) {
                     window.showToast(`Service '${name}' is restarting...`, 'info');
+                    setTimeout(fetchConfig, 1000);
+                    setTimeout(fetchConfig, 3000);
+                    setTimeout(fetchConfig, 6000);
                 } else {
                     const data = await r.json().catch(() => ({}));
                     window.showToast(`Failed to restart service '${name}': ${data.detail || 'Unknown error'}`, 'error');
+                    fetchConfig();
                 }
             } catch(e) {
                 window.showToast(`Error restarting service: ${e}`, 'error');
+                fetchConfig();
             }
         };
 

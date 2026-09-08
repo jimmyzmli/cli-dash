@@ -20,40 +20,19 @@ from pathlib import Path
 from typing import Callable, Optional, List, Union
 
 from cli_dash.database import Database, NOT_SET
-from cli_dash.utils import get_next_cron_run, get_env
+from cli_dash.utils import get_next_cron_run, get_env, rotate_log_if_needed
+from cli_dash.process import (
+    is_pid_running,
+    terminate_process,
+    kill_port_zombies,
+    kill_ports_zombies,
+    parse_services_config,
+    load_services_config,
+    get_service_ports,
+    service_manager,
+    ServiceManager,
+)
 
-
-def rotate_log_if_needed(log_path: str, max_lines: int = 1000):
-    """Rotates the log file if it exceeds max_lines, keeping all backups."""
-    if not os.path.exists(log_path):
-        return
-    try:
-        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = sum(1 for _ in f)
-        if lines >= max_lines:
-            import glob
-            backups = glob.glob(f"{log_path}.*")
-            indices = []
-            for b in backups:
-                try:
-                    indices.append(int(b.split('.')[-1]))
-                except ValueError:
-                    pass
-            max_idx = max(indices) if indices else 0
-            for i in range(max_idx, 0, -1):
-                old_log = f"{log_path}.{i}"
-                new_log = f"{log_path}.{i+1}"
-                if os.path.exists(old_log):
-                    try:
-                        os.replace(old_log, new_log)
-                    except OSError:
-                        pass
-            import shutil
-            shutil.copy2(log_path, f"{log_path}.1")
-            with open(log_path, "w", encoding="utf-8") as f:
-                pass
-    except Exception as e:
-        logging.error(f"Error rotating log {log_path}: {e}")
 
 
 class Broadcaster:
@@ -131,22 +110,7 @@ def _get_project_web_ui(config: AppConfig):
     return None
 
 
-def _parse_services_config(config_data):
-    """Normalize services configuration to a list of dicts."""
-    if isinstance(config_data, list):
-        return config_data
-    elif isinstance(config_data, dict):
-        if "command" in config_data:
-            return [config_data]
-        else:
-            services = []
-            for k, v in config_data.items():
-                if isinstance(v, dict):
-                    if "name" not in v:
-                        v["name"] = k
-                    services.append(v)
-            return services
-    return []
+_parse_services_config = parse_services_config
 
 
 def _get_help_command(config: AppConfig) -> Optional[str]:
@@ -272,41 +236,6 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
         broadcaster.publish("log", {"job_id": job_id, "content": err_msg, "job_type": job_type})
         broadcaster.publish("jobs", {"action": "updated", "job_id": job_id})
 
-def is_pid_running(pid):
-    """Check if a process is running by PID."""
-    if os.name == "nt":
-        try:
-            cmd = ["tasklist", "/FI", f"PID eq {pid}", "/NH"]
-            res = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=5, shell=True,
-                creationflags=0x08000000
-            )
-            return str(pid) in res.stdout
-        except:
-            return False
-    else:
-        try:
-            os.kill(pid, 0)
-            return True
-        except OSError:
-            return False
-
-def terminate_process(pid):
-    """Kill a process tree by PID."""
-    if not is_pid_running(pid):
-        return
-    if os.name == "nt":
-        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], 
-                       creationflags=0x08000000, shell=True)
-    else:
-        try:
-            pgid = os.getpgid(pid)
-            os.killpg(pgid, signal.SIGKILL)
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
 
 def _recovery_worker(db: Database, job_id: int, pid: int, data_dir: str, extra_env: Optional[dict] = None):
     """Monitor an orphaned background process and update job status when it finishes."""
@@ -448,117 +377,14 @@ def _scheduler_loop(db: Database, data_dir: str, extra_env=None):
         time.sleep(60)
 
 
-_service_processes = {}
+# Service management (delegated to cli_dash.process)
+_service_processes = service_manager._processes
+_service_states = service_manager._states
+_kill_zombies_on_port = kill_port_zombies
+_stop_service_proc = service_manager.stop_service
+_spawn_service = service_manager.spawn_service
+_service_manager_loop = service_manager.run_manager_loop
 
-def _service_manager_loop(services_config_path: str, log_dir: str, extra_env: Optional[dict] = None):
-    """Spawns and monitors long-running child processes defined in services.json."""
-    import subprocess
-    import time
-    import signal
-    import urllib.request
-    import urllib.error
-    
-    global _service_processes
-    _service_health_failures = {}
-    
-    while True:
-        if os.path.exists(services_config_path):
-            try:
-                with open(services_config_path, "r") as f:
-                    config_data = json.load(f)
-                    services = _parse_services_config(config_data)
-                        
-                for srv in services:
-                    if not srv.get("enabled", True):
-                        continue
-                        
-                    name = srv.get("name", "Unknown")
-                    cmd = srv.get("command", "")
-                    if not cmd:
-                        continue
-                    cmd = os.path.expanduser(cmd) if isinstance(cmd, str) and cmd.startswith("~") else str(cmd)
-                    args_list = srv.get("args", [])
-                    args_list = [os.path.expanduser(a) if isinstance(a, str) and a.startswith("~") else str(a) for a in args_list]
-                    
-                    combined_env = {}
-                    if extra_env:
-                        combined_env.update(extra_env)
-                    if "env" in srv and isinstance(srv["env"], dict):
-                        combined_env.update(srv["env"])
-                        
-                    env = get_env(combined_env)
-                    resolved_cmd = shutil.which(cmd, path=env.get("PATH")) or cmd
-                    full_cmd = [resolved_cmd] + args_list
-                    
-                    proc = _service_processes.get(name)
-                    if proc is None or proc.poll() is not None:
-                        if proc is not None:
-                            logging.warning(f"Service '{name}' exited with code {proc.returncode}. Restarting...")
-                        else:
-                            logging.info(f"Starting service '{name}'...")
-                            
-                        log_path = os.path.join(log_dir, f"service-{name}.log")
-                        rotate_log_if_needed(log_path)
-                        out_file = open(log_path, "a")
-                        
-                        try:
-                            _service_processes[name] = subprocess.Popen(
-                                full_cmd,
-                                env=env,
-                                stdout=out_file,
-                                stderr=subprocess.STDOUT
-                            )
-                            _service_health_failures[name] = 0
-                            logging.info(f"Service '{name}' started (PID {_service_processes[name].pid}).")
-                        except Exception as e:
-                            logging.error(f"Failed to start service '{name}': {e}")
-                    else:
-                        hc = srv.get("health_check")
-                        if hc and hc.get("enabled", True) and hc.get("type") == "http":
-                            port = srv.get("port")
-                            if port:
-                                path = hc.get("path", "/health")
-                                timeout = hc.get("timeout_seconds", 2)
-                                max_failures = hc.get("max_failures", 3)
-                                url = f"http://localhost:{port}{path}"
-                                
-                                is_healthy = False
-                                try:
-                                    req = urllib.request.Request(url)
-                                    with urllib.request.urlopen(req, timeout=timeout) as response:
-                                        if response.status == 200:
-                                            is_healthy = True
-                                except Exception:
-                                    pass
-                                
-                                if is_healthy:
-                                    _service_health_failures[name] = 0
-                                else:
-                                    fails = _service_health_failures.get(name, 0) + 1
-                                    _service_health_failures[name] = fails
-                                    if fails >= max_failures:
-                                        logging.error(f"Service '{name}' failed health check {fails} times. Restarting gracefully...")
-                                        try:
-                                            if os.name == "nt":
-                                                proc.terminate()
-                                            else:
-                                                proc.send_signal(signal.SIGTERM)
-                                        except Exception:
-                                            pass
-                                        
-                                        try:
-                                            proc.wait(timeout=5.0)
-                                        except subprocess.TimeoutExpired:
-                                            try:
-                                                proc.kill()
-                                            except Exception:
-                                                pass
-                                        _service_processes[name] = None
-                                        _service_health_failures[name] = 0
-            except Exception as e:
-                logging.error(f"Error reading {services_config_path} for service manager: {e}")
-        
-        time.sleep(5)
 
 
 def create_app(config: AppConfig, db: Database):
@@ -642,28 +468,7 @@ def create_app(config: AppConfig, db: Database):
         mcp_servers = []
         if config.web_ui_dir:
             services_config_path = os.path.join(config.web_ui_dir, "config", "services.json")
-            if os.path.exists(services_config_path):
-                try:
-                    with open(services_config_path, "r") as f:
-                        config_data = json.load(f)
-                        mcp_config = _parse_services_config(config_data)
-                        for srv in mcp_config:
-                            if srv.get("enabled", True):
-                                pid = None
-                                try:
-                                    proc = _service_processes.get(srv.get("name", "Unknown"))
-                                    if proc and proc.poll() is None:
-                                        pid = proc.pid
-                                except Exception:
-                                    pass
-                                
-                                mcp_servers.append({
-                                    "name": srv.get("name", "MCP"),
-                                    "port": srv.get("port", 9991),
-                                    "pid": pid
-                                })
-                except Exception:
-                    pass
+            mcp_servers = service_manager.get_services_status(services_config_path)
         return {
             "title": config.title,
             "mcp_servers": mcp_servers
@@ -678,44 +483,12 @@ def create_app(config: AppConfig, db: Database):
         if not os.path.exists(services_config_path):
             raise HTTPException(status_code=404, detail="Services config not found")
             
-        try:
-            with open(services_config_path, "r") as f:
-                config_data = json.load(f)
-                services = _parse_services_config(config_data)
-                
-                for srv in services:
-                    if srv.get("name") == service_name:
-                        proc = _service_processes.get(service_name)
-                        if proc and proc.poll() is None:
-                            wait_ms = srv.get("SIGKILL_WAIT_MS", 5000)
-                            
-                            def kill_task():
-                                try:
-                                    if os.name == "nt":
-                                        proc.terminate()
-                                    else:
-                                        proc.send_signal(signal.SIGTERM)
-                                except Exception:
-                                    pass
-                                    
-                                try:
-                                    proc.wait(timeout=wait_ms / 1000.0)
-                                except subprocess.TimeoutExpired:
-                                    try:
-                                        proc.kill()
-                                    except Exception:
-                                        pass
-                            
-                            import threading
-                            threading.Thread(target=kill_task, daemon=True).start()
-                            return {"status": "restarting"}
-                        raise HTTPException(status_code=400, detail="Service is not running")
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+        log_dir = os.path.join(data_dir, "jobs")
+        if not service_manager.restart_service_async(service_name, services_config_path, log_dir, config.extra_env):
+            raise HTTPException(status_code=404, detail="Service not found")
             
-        raise HTTPException(status_code=404, detail="Service not found")
+        return {"status": "restarting"}
+
 
     @app.get("/api/help")
     def get_help():
@@ -1176,34 +949,15 @@ class DashServer:
         return None
 
     def _kill_port_zombies(self):
-        """Find and kill any processes listening on the configured port."""
-        port = self.config.port
-        print(f"Force mode: checking for zombie processes on port {port}...")
-        try:
-            if os.name == 'nt':
-                res = subprocess.run(f"netstat -ano | findstr :{port}", shell=True, capture_output=True, text=True)
-                for line in res.stdout.strip().split('\n'):
-                    parts = line.strip().split()
-                    if len(parts) >= 5 and 'LISTENING' in parts:
-                        pid = parts[-1]
-                        if pid != "0":
-                            print(f"Force killing zombie process (PID: {pid}) on port {port}...")
-                            res = subprocess.run(["taskkill", "/F", "/T", "/PID", pid], 
-                                           capture_output=True, text=True,
-                                           creationflags=0x08000000)
-                            if res.returncode != 0:
-                                print(f"\033[91mFailed to kill zombie process {pid}: {res.stderr.strip()}\033[0m")
-            else:
-                res = subprocess.run(["lsof", "-t", f"-i:{port}"], capture_output=True, text=True)
-                for pid in res.stdout.strip().split():
-                    if pid.isdigit():
-                        print(f"Force killing zombie process (PID: {pid}) on port {port}...")
-                        try:
-                            os.kill(int(pid), signal.SIGKILL)
-                        except Exception:
-                            pass
-        except Exception as e:
-            print(f"Warning: Failed to clean up port {port} zombies: {e}")
+        """Find and kill any processes listening on the configured port or service ports."""
+        ports = [self.config.port]
+        if self.config.web_ui_dir:
+            services_config_path = os.path.join(self.config.web_ui_dir, "config", "services.json")
+            ports.extend(get_service_ports(services_config_path))
+
+        for port in set(ports):
+            print(f"Force mode: checking for zombie processes on port {port}...")
+            kill_port_zombies(port)
 
     def start(self, force=False):
         # ANSI Colors
@@ -1469,27 +1223,8 @@ class DashServer:
         if pid:
             print(f"Stopping server (PID: {pid})...")
             try:
-                if os.name == "nt":
-                    res = subprocess.run(
-                        ["taskkill", "/F", "/T", "/PID", str(pid)],
-                        capture_output=True, text=True,
-                        creationflags=0x08000000
-                    )
-                    if res.returncode != 0:
-                        print(f"{RED}Failed to kill PID {pid}: {res.stderr.strip()}{RESET}")
-                else:
-                    try:
-                        os.killpg(pid, signal.SIGTERM)
-                    except AttributeError:
-                        os.kill(pid, signal.SIGTERM)
-                    time.sleep(1)
-                    if self.is_running():
-                        print(f"{RED}Force killing...{RESET}")
-                        try:
-                            os.killpg(pid, signal.SIGKILL)
-                        except AttributeError:
-                            os.kill(pid, signal.SIGKILL)
-
+                if not terminate_process(pid, timeout=1.5, force=True):
+                    print(f"{RED}Failed to kill PID {pid}{RESET}")
                 if os.path.exists(self.pid_file):
                     os.remove(self.pid_file)
                 print(f"{YELLOW}Server stopped.{RESET}")
