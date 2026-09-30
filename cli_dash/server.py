@@ -299,9 +299,18 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
              is_cron=0, job_type='command', queue_name=None, cmd_env=None, job_exec=None, job_source='manual'):
     """Create a job record and start execution in a daemon thread."""
     exec_prefix = job_exec if job_exec is not None else os.getenv("WEB_UI_JOB_EXEC")
-    bypass_prefixes = ("/", "./", "cd ", "sh ", "bash ", "zsh ", "source ")
-    if exec_prefix and not command.startswith(f"{exec_prefix} ") and not command.startswith(bypass_prefixes):
-        command = f"{exec_prefix} {command}"
+    bypass_prefixes = ("/", "./", "../", ".venv/", "~/", "cd ", "sh ", "bash ", "zsh ", "source ")
+    if exec_prefix:
+        norm_exec = exec_prefix.strip()
+        prefix_clean = norm_exec[2:] if norm_exec.startswith("./") else norm_exec
+        prefix_with_dot = norm_exec if norm_exec.startswith("./") else f"./{norm_exec}"
+        already_prefixed = (
+            command.startswith(f"{norm_exec} ")
+            or command.startswith(f"{prefix_clean} ")
+            or command.startswith(f"{prefix_with_dot} ")
+        )
+        if not already_prefixed and not command.startswith(bypass_prefixes):
+            command = f"{exec_prefix} {command}"
 
     final_env = {}
     if extra_env:
