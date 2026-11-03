@@ -1054,7 +1054,10 @@ class DashServer:
                     os.dup2(errlog.fileno(), sys.stderr.fileno())
             else:
                 # Windows daemonization
-                cmd = [sys.executable] + sys.argv + ["--internal-run"]
+                child_args = [("start" if arg == "restart" else arg) for arg in sys.argv]
+                if "--internal-run" not in child_args:
+                    child_args.append("--internal-run")
+                cmd = [sys.executable] + child_args
                 with open(self.error_log, "a", encoding="utf-8") as log_file:
                     subprocess.Popen(
                         cmd,

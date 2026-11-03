@@ -93,10 +93,12 @@ def find_pids_on_port(port: int) -> List[int]:
             res = subprocess.run(f"netstat -ano | findstr :{port}", shell=True, capture_output=True, text=True)
             for line in res.stdout.strip().split("\n"):
                 parts = line.strip().split()
-                if len(parts) >= 5 and "LISTENING" in parts:
-                    pid = parts[-1]
-                    if pid.isdigit() and int(pid) != 0:
-                        pids.append(int(pid))
+                if len(parts) >= 5:
+                    local_addr = parts[1]
+                    if local_addr.endswith(f":{port}"):
+                        pid = parts[-1]
+                        if pid.isdigit() and int(pid) != 0:
+                            pids.append(int(pid))
         else:
             res = subprocess.run(["lsof", "-t", f"-i:{port}"], capture_output=True, text=True)
             for pid_str in res.stdout.strip().split():
