@@ -1003,6 +1003,8 @@ class DashServer:
 
         if self.config.ssl_dir:
             ssl_cert = os.path.join(self.config.ssl_dir, "fullchain.pem")
+            if not os.path.exists(ssl_cert):
+                ssl_cert = os.path.join(self.config.ssl_dir, "domain.cert.pem")
             if os.path.exists(ssl_cert):
                 expiry = self._get_cert_expiry(ssl_cert)
                 if expiry:
@@ -1162,7 +1164,11 @@ class DashServer:
         ssl_certfile = None
         if self.config.ssl_dir:
             ssl_keyfile = os.path.join(self.config.ssl_dir, "privkey.pem")
+            if not os.path.exists(ssl_keyfile):
+                ssl_keyfile = os.path.join(self.config.ssl_dir, "private.key.pem")
             ssl_certfile = os.path.join(self.config.ssl_dir, "fullchain.pem")
+            if not os.path.exists(ssl_certfile):
+                ssl_certfile = os.path.join(self.config.ssl_dir, "domain.cert.pem")
             
             if not os.path.exists(ssl_keyfile) or not os.path.exists(ssl_certfile):
                 logging.error(f"SSL requested but files missing in {self.config.ssl_dir}")
