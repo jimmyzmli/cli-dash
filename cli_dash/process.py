@@ -49,7 +49,7 @@ def terminate_process(pid: int, timeout: float = 3.0, force: bool = True) -> boo
     if os.name == "nt":
         res = subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(pid)],
-            capture_output=True, text=True, creationflags=0x08000000, shell=True
+            capture_output=True, text=True, creationflags=0x08000000, shell=False
         )
         return res.returncode == 0
     else:
