@@ -177,9 +177,9 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
     try:
         if os.name == "nt":
             import re
-            command = re.sub(r'^\./\.venv/bin/python\d*(\.exe)?', r'.\.venv\Scripts\python.exe', command)
-            command = re.sub(r'^\.venv/bin/python\d*(\.exe)?', r'.\.venv\Scripts\python.exe', command)
-            command = re.sub(r'^\.venv\\bin\\python\d*(\.exe)?', r'.\.venv\Scripts\python.exe', command)
+            command = re.sub(r'^\./\.venv/bin/python\d*(\.exe)?', lambda _: r'.\.venv\Scripts\python.exe', command)
+            command = re.sub(r'^\.venv/bin/python\d*(\.exe)?', lambda _: r'.\.venv\Scripts\python.exe', command)
+            command = re.sub(r'^\.venv\\bin\\python\d*(\.exe)?', lambda _: r'.\.venv\Scripts\python.exe', command)
 
         env = get_env(extra_env)
 
@@ -307,8 +307,8 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
     exec_prefix = job_exec if job_exec is not None else os.getenv("WEB_UI_JOB_EXEC")
     if os.name == "nt" and exec_prefix:
         import re
-        exec_prefix = re.sub(r'^\./\.venv/bin/python\d*', r'.\.venv\Scripts\python.exe', exec_prefix)
-        exec_prefix = re.sub(r'^\.venv/bin/python\d*', r'.\.venv\Scripts\python.exe', exec_prefix)
+        exec_prefix = re.sub(r'^\./\.venv/bin/python\d*', lambda _: r'.\.venv\Scripts\python.exe', exec_prefix)
+        exec_prefix = re.sub(r'^\.venv/bin/python\d*', lambda _: r'.\.venv\Scripts\python.exe', exec_prefix)
     bypass_prefixes = ("/", "./", "../", ".venv/", "~/", "cd ", "sh ", "bash ", "zsh ", "source ")
     if exec_prefix:
         norm_exec = exec_prefix.strip()
