@@ -899,8 +899,13 @@ class DashServer:
         # Read app.json overrides if present
         load_config_file(os.path.join(self.config.web_ui_dir, "config", "app.json"))
         
-        # Read server.json overrides if present (machine-specific)
+        # Read server.json overrides if present (legacy machine-specific)
         load_config_file(os.path.join(self.config.web_ui_dir, "config", "server.json"))
+        load_config_file("server.json")
+
+        # Read web_ui.json overrides if present (root or web_ui dir)
+        load_config_file("web_ui.json")
+        load_config_file(os.path.join(self.config.web_ui_dir, "web_ui.json"))
 
         # Ensure paths are absolute relative to CWD
         self.config.web_ui_dir = os.path.abspath(self.config.web_ui_dir)
