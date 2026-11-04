@@ -586,6 +586,9 @@ const App = {
         };
         
         window.showJobGlobal = showJob;
+        window.showMonitorGlobal = (show = true) => {
+            showMonitor.value = show;
+        };
 
         const saveHeaderState = (id) => {
             localStorage.setItem(id, headerState[id]);
@@ -1028,10 +1031,6 @@ const HistoryView = {
             const m = Math.floor(seconds / 60);
             const s = Math.floor(seconds % 60);
             return `${m}m ${s}s`;
-        };
-
-        window.showMonitorGlobal = (show = true) => {
-            showMonitor.value = show;
         };
 
         return { jobs, searchQuery, showCron, filteredJobs, resetFilters, deleteJob, terminateJob, runJobAgain, formatTime, formatDuration, showJob: window.showJobGlobal, getQueueColor: window.getQueueColor, onScroll };
