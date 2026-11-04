@@ -34,6 +34,38 @@ def get_env(extra_env: Optional[dict] = None) -> dict:
     return env
 
 
+def expand_env_vars(obj):
+    """
+    Recursively expand ${env:VAR} or ${env:VAR:-default} syntax in strings, dicts, and lists.
+    """
+    import os
+    import re
+
+    pattern = re.compile(r"\$\{env:([A-Za-z0-9_]+)(?::-(.*?))?\}")
+
+    def _replace_str(s: str):
+        m = pattern.fullmatch(s)
+        if m:
+            var_name = m.group(1)
+            default_val = m.group(2) if m.group(2) is not None else ""
+            val = os.environ.get(var_name)
+            return val if (val is not None and val != "") else default_val
+        def _sub(match):
+            var_name = match.group(1)
+            default_val = match.group(2) if match.group(2) is not None else ""
+            val = os.environ.get(var_name)
+            return val if (val is not None and val != "") else default_val
+        return pattern.sub(_sub, s)
+
+    if isinstance(obj, str):
+        return _replace_str(obj)
+    elif isinstance(obj, dict):
+        return {k: expand_env_vars(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [expand_env_vars(item) for item in obj]
+    return obj
+
+
 def get_next_cron_run(cron_expr: str, base_time: datetime) -> datetime:
     """
     Calculate the next run time for a cron expression, supporting L (last) extensions.

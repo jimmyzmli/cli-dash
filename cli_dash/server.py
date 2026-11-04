@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional, List, Union
 
 from cli_dash.database import Database, NOT_SET
-from cli_dash.utils import get_next_cron_run, get_env, rotate_log_if_needed
+from cli_dash.utils import get_next_cron_run, get_env, rotate_log_if_needed, expand_env_vars
 from cli_dash.process import (
     is_pid_running,
     terminate_process,
@@ -873,39 +873,55 @@ class DashServer:
         
         if os.getenv("WEB_UI_SSL_DIR"):
             self.config.ssl_dir = os.getenv("WEB_UI_SSL_DIR")
+        elif os.getenv("SSL_DIR"):
+            self.config.ssl_dir = os.getenv("SSL_DIR")
 
         def load_config_file(filepath: str):
             if os.path.isfile(filepath):
                 try:
-                    with open(filepath, "r") as f:
+                    with open(filepath, "r", encoding="utf-8") as f:
                         app_data = json.load(f)
-                        if "host" in app_data:
-                            self.config.host = app_data["host"]
-                        if "port" in app_data:
-                            self.config.port = int(app_data["port"])
-                        if "job_exec" in app_data:
-                            os.environ["WEB_UI_JOB_EXEC"] = app_data["job_exec"]
-                        if "env" in app_data and isinstance(app_data["env"], dict):
-                            if not self.config.extra_env:
-                                self.config.extra_env = {}
-                            self.config.extra_env.update(app_data["env"])
-                        if "ssl_dir" in app_data:
-                            self.config.ssl_dir = app_data["ssl_dir"]
-                        if "bind_retries" in app_data:
-                            self.config.bind_retries = int(app_data["bind_retries"])
+                    app_data = expand_env_vars(app_data)
+                    if "host" in app_data:
+                        raw_host = app_data["host"]
+                        if isinstance(raw_host, str):
+                            if "," in raw_host:
+                                self.config.host = [h.strip() for h in raw_host.split(",") if h.strip()]
+                            elif raw_host:
+                                self.config.host = raw_host
+                            else:
+                                self.config.host = "127.0.0.1"
+                        elif isinstance(raw_host, list):
+                            self.config.host = raw_host
+                    if "port" in app_data and app_data["port"]:
+                        self.config.port = int(app_data["port"])
+                    if "job_exec" in app_data:
+                        os.environ["WEB_UI_JOB_EXEC"] = app_data["job_exec"]
+                    if "env" in app_data and isinstance(app_data["env"], dict):
+                        if not self.config.extra_env:
+                            self.config.extra_env = {}
+                        self.config.extra_env.update(app_data["env"])
+                    if "ssl_dir" in app_data:
+                        ssl_dir_val = app_data["ssl_dir"]
+                        if ssl_dir_val:
+                            ssl_dir_val = os.path.expanduser(str(ssl_dir_val))
+                            if os.path.isdir(ssl_dir_val):
+                                self.config.ssl_dir = ssl_dir_val
+                            else:
+                                logging.warning(f"Configured ssl_dir not found: {ssl_dir_val}")
+                                self.config.ssl_dir = None
+                        else:
+                            self.config.ssl_dir = None
+                    if "bind_retries" in app_data and app_data["bind_retries"] is not None:
+                        self.config.bind_retries = int(app_data["bind_retries"])
                 except Exception as e:
                     logging.error(f"Failed to read {filepath}: {e}")
 
         # Read app.json overrides if present
         load_config_file(os.path.join(self.config.web_ui_dir, "config", "app.json"))
         
-        # Read server.json overrides if present (legacy machine-specific)
+        # Read server.json overrides if present (support only this config path)
         load_config_file(os.path.join(self.config.web_ui_dir, "config", "server.json"))
-        load_config_file("server.json")
-
-        # Read web_ui.json overrides if present (root or web_ui dir)
-        load_config_file("web_ui.json")
-        load_config_file(os.path.join(self.config.web_ui_dir, "web_ui.json"))
 
         # Ensure paths are absolute relative to CWD
         self.config.web_ui_dir = os.path.abspath(self.config.web_ui_dir)
@@ -1207,8 +1223,9 @@ class DashServer:
                         sock.bind((h, self.config.port))
                         break
                     except OSError as e:
-                        if e.errno == 49 and attempt < max_retries - 1:
-                            logging.warning(f"Could not bind to {h}:{self.config.port} (Errno 49). Retrying in 2s...")
+                        import errno
+                        if e.errno in (getattr(errno, 'EADDRNOTAVAIL', 49), 49, 99, 10049) and attempt < max_retries - 1:
+                            logging.warning(f"Could not bind to {h}:{self.config.port} (Errno {e.errno}). Retrying in 2s...")
                             time.sleep(2)
                         else:
                             raise
