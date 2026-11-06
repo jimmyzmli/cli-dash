@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional, List, Union
 
 from cli_dash.database import Database, NOT_SET
-from cli_dash.utils import get_next_cron_run, get_env, rotate_log_if_needed, expand_env_vars
+from cli_dash.utils import get_next_cron_run, get_env, rotate_log_if_needed, expand_env_vars, is_windows, normalize_path
 from cli_dash.process import (
     is_pid_running,
     terminate_process,
@@ -175,7 +175,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
     log_path = os.path.join(log_dir, f"{job_id}.log")
 
     try:
-        if os.name == "nt":
+        if is_windows():
             import re
             command = re.sub(
                 r'(?<![^\s;&|(\'"])(?:\./|\.\\)?\.?venv[/\\](?:bin|Scripts)[/\\]python\d*(?:\.exe)?(?![^\s;&|)\'"])',
@@ -203,7 +203,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
                 "encoding": "utf-8",
                 "errors": "replace",
             }
-            if os.name == "nt":
+            if is_windows():
                 si = subprocess.STARTUPINFO()
                 si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                 si.wShowWindow = subprocess.SW_HIDE
@@ -307,7 +307,7 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
              is_cron=0, job_type='command', queue_name=None, cmd_env=None, job_exec=None, job_source='manual'):
     """Create a job record and start execution in a daemon thread."""
     exec_prefix = job_exec if job_exec is not None else os.getenv("WEB_UI_JOB_EXEC")
-    if os.name == "nt" and exec_prefix:
+    if is_windows() and exec_prefix:
         import re
         exec_prefix = re.sub(
             r'(?<![^\s;&|(\'"])(?:\./|\.\\)?\.?venv[/\\](?:bin|Scripts)[/\\]python\d*(?:\.exe)?(?![^\s;&|)\'"])',
@@ -877,9 +877,9 @@ class DashServer:
         self.config = config or AppConfig()
         
         if os.getenv("WEB_UI_SSL_DIR"):
-            self.config.ssl_dir = os.getenv("WEB_UI_SSL_DIR")
+            self.config.ssl_dir = normalize_path(os.getenv("WEB_UI_SSL_DIR"))
         elif os.getenv("SSL_DIR"):
-            self.config.ssl_dir = os.getenv("SSL_DIR")
+            self.config.ssl_dir = normalize_path(os.getenv("SSL_DIR"))
 
         def load_config_file(filepath: str):
             if os.path.isfile(filepath):
@@ -909,7 +909,7 @@ class DashServer:
                     if "ssl_dir" in app_data:
                         ssl_dir_val = app_data["ssl_dir"]
                         if ssl_dir_val:
-                            ssl_dir_val = os.path.expanduser(str(ssl_dir_val))
+                            ssl_dir_val = normalize_path(os.path.expanduser(str(ssl_dir_val)))
                             if os.path.isdir(ssl_dir_val):
                                 self.config.ssl_dir = ssl_dir_val
                             else:
@@ -933,7 +933,7 @@ class DashServer:
         self.config.data_dir = os.path.abspath(self.config.data_dir)
         self.config.log_dir = os.path.abspath(self.config.log_dir)
         if self.config.ssl_dir:
-            self.config.ssl_dir = os.path.abspath(self.config.ssl_dir)
+            self.config.ssl_dir = os.path.abspath(normalize_path(self.config.ssl_dir))
 
         self.pid_file = os.path.join(self.config.data_dir, "web-ui.pid")
         self.error_log = os.path.join(self.config.log_dir, "web-ui.log")
@@ -1055,12 +1055,12 @@ class DashServer:
                 [sys.executable, "-m", "pip", "install",
                  "fastapi", "uvicorn", "python-multipart", "croniter"],
                 check=True,
-                creationflags=0x08000000 if os.name == "nt" else 0
+                creationflags=0x08000000 if is_windows() else 0
             )
 
         # Daemonize (Unix)
         if "--internal-run" not in sys.argv:
-            if os.name != "nt":
+            if not is_windows():
                 try:
                     child_pid = os.fork()
                     if child_pid > 0:
@@ -1654,7 +1654,7 @@ class DashServer:
         if args.port:
             self.config.port = args.port
         if args.ssl_dir:
-            self.config.ssl_dir = os.path.abspath(args.ssl_dir)
+            self.config.ssl_dir = os.path.abspath(normalize_path(args.ssl_dir))
 
         if args.server == "start":
             self.start(force=args.force)

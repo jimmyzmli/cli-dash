@@ -13,14 +13,14 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional, Union
 
-from cli_dash.utils import get_env, rotate_log_if_needed
+from cli_dash.utils import get_env, rotate_log_if_needed, is_windows
 
 
 def is_pid_running(pid: int) -> bool:
     """Check if a process is running by PID."""
     if not pid:
         return False
-    if os.name == "nt":
+    if is_windows():
         try:
             cmd = ["tasklist", "/FI", f"PID eq {pid}", "/NH"]
             res = subprocess.run(
@@ -46,7 +46,7 @@ def terminate_process(pid: int, timeout: float = 3.0, force: bool = True) -> boo
     if not pid or not is_pid_running(pid):
         return True
 
-    if os.name == "nt":
+    if is_windows():
         res = subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(pid)],
             capture_output=True, text=True, creationflags=0x08000000, shell=False
@@ -89,7 +89,7 @@ def find_pids_on_port(port: int) -> List[int]:
         return []
     pids = []
     try:
-        if os.name == "nt":
+        if is_windows():
             res = subprocess.run(f"netstat -ano | findstr :{port}", shell=True, capture_output=True, text=True)
             for line in res.stdout.strip().split("\n"):
                 parts = line.strip().split()
@@ -276,7 +276,7 @@ class ServiceManager:
 
         if proc:
             try:
-                if os.name == "nt":
+                if is_windows():
                     proc.terminate()
                 else:
                     proc.send_signal(signal.SIGTERM)

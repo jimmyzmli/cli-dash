@@ -1,5 +1,27 @@
 from datetime import datetime, timedelta
+import os
 from typing import Optional
+
+
+def is_windows() -> bool:
+    """Return True if running on Windows and FORCE_POSIX is not enabled."""
+    if os.environ.get("FORCE_POSIX", "").lower() in ("1", "true", "yes", "posix"):
+        return False
+    return os.name == "nt"
+
+
+def normalize_path(p: Optional[str]) -> Optional[str]:
+    r"""Normalize Windows drive paths (e.g. C:\...) to POSIX / WSL paths (/mnt/c/...) if not running on Windows."""
+    if not p:
+        return p
+    if not is_windows():
+        import re
+        m = re.match(r"^([A-Za-z]):[/\\](.*)", str(p))
+        if m:
+            drive = m.group(1).lower()
+            rest = m.group(2).replace("\\", "/")
+            return f"/mnt/{drive}/{rest}"
+    return p
 
 
 def get_env(extra_env: Optional[dict] = None) -> dict:
