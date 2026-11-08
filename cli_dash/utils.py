@@ -210,7 +210,10 @@ def rotate_log_if_needed(log_path: str, max_lines: int = 1000):
                         os.replace(old_log, new_log)
                     except OSError:
                         pass
-            shutil.copy2(log_path, f"{log_path}.1")
+            try:
+                shutil.copyfile(log_path, f"{log_path}.1")
+            except OSError:
+                pass
             with open(log_path, "w", encoding="utf-8") as f:
                 pass
     except Exception as e:
