@@ -71,12 +71,20 @@ def expand_env_vars(obj):
             var_name = m.group(1)
             default_val = m.group(2) if m.group(2) is not None else ""
             val = os.environ.get(var_name)
-            return val if (val is not None and val != "") else default_val
+            if val is not None and val != "":
+                return val
+            if default_val.startswith("${env:"):
+                return _replace_str(default_val)
+            return default_val
         def _sub(match):
             var_name = match.group(1)
             default_val = match.group(2) if match.group(2) is not None else ""
             val = os.environ.get(var_name)
-            return val if (val is not None and val != "") else default_val
+            if val is not None and val != "":
+                return val
+            if default_val.startswith("${env:"):
+                return _replace_str(default_val)
+            return default_val
         return pattern.sub(_sub, s)
 
     if isinstance(obj, str):

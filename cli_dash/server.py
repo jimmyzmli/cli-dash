@@ -876,6 +876,10 @@ class DashServer:
     def __init__(self, config: AppConfig = None):
         self.config = config or AppConfig()
         
+        bind_host_env = os.getenv("BIND_HOST") or os.getenv("HOST")
+        if bind_host_env:
+            self.config.host = [h.strip() for h in bind_host_env.split(",") if h.strip()] if "," in bind_host_env else bind_host_env
+
         if os.getenv("WEB_UI_SSL_DIR"):
             self.config.ssl_dir = normalize_path(os.getenv("WEB_UI_SSL_DIR"))
         elif os.getenv("SSL_DIR"):
@@ -890,6 +894,8 @@ class DashServer:
                     if "host" in app_data:
                         raw_host = app_data["host"]
                         if isinstance(raw_host, str):
+                            if not raw_host and (os.getenv("BIND_HOST") or os.getenv("HOST")):
+                                raw_host = os.getenv("BIND_HOST") or os.getenv("HOST")
                             if "," in raw_host:
                                 self.config.host = [h.strip() for h in raw_host.split(",") if h.strip()]
                             elif raw_host:
