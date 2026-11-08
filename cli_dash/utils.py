@@ -24,6 +24,40 @@ def normalize_path(p: Optional[str]) -> Optional[str]:
     return p
 
 
+def normalize_command_venv(cmd: Optional[str]) -> Optional[str]:
+    r"""
+    Normalize virtual environment Python executable references in commands:
+    - On Windows: map .venv or .venv_wsl (bin/Scripts) to .\.venv\Scripts\python.exe
+    - On POSIX (Linux/WSL): if .venv_wsl exists or sys.prefix is .venv_wsl, map to ./.venv_wsl/bin/python3
+    - On POSIX (macOS): map to ./.venv/bin/python3
+    """
+    if not cmd:
+        return cmd
+    import re
+    import sys
+
+    pattern = r'(?<![^\s;&|(\'"])(?:\./|\.\\)?\.?venv(?:_wsl)?[/\\](?:bin|Scripts)[/\\]python\d*(?:\.exe)?(?![^\s;&|)\'"])'
+
+    if is_windows():
+        return re.sub(pattern, lambda _: r'.\.venv\Scripts\python.exe', cmd)
+
+    use_wsl_venv = (
+        os.path.basename(sys.prefix) == ".venv_wsl"
+        or os.path.exists("./.venv_wsl/bin/python3")
+        or os.path.exists(".venv_wsl/bin/python3")
+        or os.path.exists("./.venv_wsl/bin/python")
+        or os.path.exists(".venv_wsl/bin/python")
+    )
+    if use_wsl_venv:
+        return re.sub(pattern, lambda _: './.venv_wsl/bin/python3', cmd)
+
+    return re.sub(
+        r'(?<![^\s;&|(\'"])(?:\./|\.\\)?\.?venv_wsl[/\\](?:bin|Scripts)[/\\]python\d*(?:\.exe)?(?![^\s;&|)\'"])',
+        lambda _: './.venv/bin/python3',
+        cmd,
+    )
+
+
 def get_env(extra_env: Optional[dict] = None) -> dict:
     """
     Construct a clean execution environment with Python executable dir

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Optional, List, Union
 
 from cli_dash.database import Database, NOT_SET
-from cli_dash.utils import get_next_cron_run, get_env, rotate_log_if_needed, expand_env_vars, is_windows, normalize_path
+from cli_dash.utils import get_next_cron_run, get_env, rotate_log_if_needed, expand_env_vars, is_windows, normalize_path, normalize_command_venv
 from cli_dash.process import (
     is_pid_running,
     terminate_process,
@@ -175,13 +175,7 @@ def run_command_task(db: Database, job_id: int, command: str, data_dir: str,
     log_path = os.path.join(log_dir, f"{job_id}.log")
 
     try:
-        if is_windows():
-            import re
-            command = re.sub(
-                r'(?<![^\s;&|(\'"])(?:\./|\.\\)?\.?venv[/\\](?:bin|Scripts)[/\\]python\d*(?:\.exe)?(?![^\s;&|)\'"])',
-                lambda _: r'.\.venv\Scripts\python.exe',
-                command,
-            )
+        command = normalize_command_venv(command)
 
         env = get_env(extra_env)
 
@@ -307,14 +301,9 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
              is_cron=0, job_type='command', queue_name=None, cmd_env=None, job_exec=None, job_source='manual'):
     """Create a job record and start execution in a daemon thread."""
     exec_prefix = job_exec if job_exec is not None else os.getenv("WEB_UI_JOB_EXEC")
-    if is_windows() and exec_prefix:
-        import re
-        exec_prefix = re.sub(
-            r'(?<![^\s;&|(\'"])(?:\./|\.\\)?\.?venv[/\\](?:bin|Scripts)[/\\]python\d*(?:\.exe)?(?![^\s;&|)\'"])',
-            lambda _: r'.\.venv\Scripts\python.exe',
-            exec_prefix,
-        )
-    bypass_prefixes = ("/", "./", ".\\", "../", "..\\", ".venv/", ".venv\\", "~/", "cd ", "sh ", "bash ", "zsh ", "source ")
+    if exec_prefix:
+        exec_prefix = normalize_command_venv(exec_prefix)
+    bypass_prefixes = ("/", "./", ".\\", "../", "..\\", ".venv/", ".venv\\", ".venv_wsl/", ".venv_wsl\\", "~/", "cd ", "sh ", "bash ", "zsh ", "source ")
     if exec_prefix:
         norm_exec = exec_prefix.strip()
         prefix_clean = norm_exec[2:] if norm_exec.startswith("./") else norm_exec
@@ -326,6 +315,8 @@ def _run_job(db: Database, command: str, data_dir: str, extra_env=None,
         )
         if not already_prefixed and not command.startswith(bypass_prefixes):
             command = f"{exec_prefix} {command}"
+
+    command = normalize_command_venv(command)
 
     final_env = {}
     if extra_env:
