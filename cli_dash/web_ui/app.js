@@ -2,6 +2,22 @@
 ;(function() {
 const { createApp, ref, reactive, computed, watch, onMounted, onBeforeUnmount, onUnmounted, nextTick, markRaw } = Vue;
 
+const getBaseUrl = () => {
+    if (window.__DASH_BASE__) return window.__DASH_BASE__;
+    const path = window.location.pathname;
+    const base = path.replace(/\/job\/[^\/]*\/?$/, '');
+    return base.endsWith('/') ? base : base + '/';
+};
+const baseUrl = getBaseUrl();
+window.__DASH_BASE__ = baseUrl;
+
+const dashUrl = (endpoint) => {
+    if (!endpoint) return baseUrl;
+    const clean = endpoint.startsWith('/') ? endpoint.slice(1) : endpoint;
+    return baseUrl + clean;
+};
+window.dashUrl = dashUrl;
+
 window.dashExtensions = { tabs: [], headerOptions: [], onInit: [] };
 
 window.showToast = function(message, type = 'info') {
@@ -431,9 +447,9 @@ const App = {
         };
         const handleRoute = () => {
             const path = window.location.pathname;
-            if (path.startsWith('/job/')) {
-                const parts = path.split('/');
-                const jobId = parts[2];
+            const match = path.match(/\/job\/([^\/]+)\/?$/);
+            if (match) {
+                const jobId = match[1];
                 if (jobId === 'help') {
                     showHelpConsole();
                 } else {
@@ -460,7 +476,7 @@ const App = {
         // SSE
         const setupSSE = () => {
             if (window._sse) window._sse.close();
-            const sse = new EventSource('/api/events');
+            const sse = new EventSource(dashUrl('api/events'));
             window._sse = sse;
             
             sse.addEventListener('jobs', () => { window.dispatchEvent(new Event('refresh-history')); });
@@ -487,7 +503,8 @@ const App = {
         };
 
         const showJob = async (job) => {
-            if (window.location.pathname !== `/job/${job.id}`) window.history.pushState({}, '', `/job/${job.id}`);
+            const jobPath = dashUrl(`job/${job.id}`);
+            if (window.location.pathname !== jobPath) window.history.pushState({}, '', jobPath);
             activeJobId.value = job.id;
             activeJobLabel.value = `[Job ${job.id}] ${job.command || 'Loading...'}`;
             activeJob.value = job;
@@ -496,14 +513,14 @@ const App = {
             
             try {
                 // Always fetch job details to get the authoritative command line from the DB
-                const jr = await fetch(`/api/job/${job.id}`);
+                const jr = await fetch(dashUrl(`api/job/${job.id}`));
                 if (jr.ok) {
                     const fullJob = await jr.json();
                     activeJobLabel.value = `[Job ${fullJob.id}] ${fullJob.command}`;
                     activeJob.value = fullJob;
                 }
 
-                const r = await fetch(`/api/job/${job.id}/log?offset=0`);
+                const r = await fetch(dashUrl(`api/job/${job.id}/log?offset=0`));
                 const ld = await r.json();
                 consoleContent.value = ld.content || (ld.job_status === 'running' ? 'Initializing...' : 'No output captured.');
                 nextTick(() => {
@@ -514,7 +531,8 @@ const App = {
         };
 
         const showHelpConsole = async () => {
-            if (window.location.pathname !== `/job/help`) window.history.pushState({}, '', `/job/help`);
+            const helpPath = dashUrl('job/help');
+            if (window.location.pathname !== helpPath) window.history.pushState({}, '', helpPath);
             activeJobId.value = 'help';
             activeJobLabel.value = 'Help / Documentation';
             activeJob.value = { id: 'help', command: 'Help' };
@@ -522,7 +540,7 @@ const App = {
             if (window.innerWidth <= 768) showMonitor.value = true;
             
             try {
-                const r = await fetch('/api/help');
+                const r = await fetch(dashUrl('api/help'));
                 if (r.ok) {
                     const data = await r.json();
                     consoleContent.value = data.content || 'No help documentation returned.';
@@ -569,7 +587,7 @@ const App = {
             activeJobLabel.value = '';
             activeJob.value = null;
             consoleContent.value = '';
-            if (window.location.pathname !== '/') window.history.pushState(null, '', '/');
+            if (window.location.pathname !== baseUrl) window.history.pushState(null, '', baseUrl);
             if (window.innerWidth <= 768) showMonitor.value = false;
         };
 
@@ -579,7 +597,7 @@ const App = {
                     command += ` ${opt.flag}`;
             });
             try {
-                const r = await fetch('/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron, job_type: jobType, queue, env, job_exec }) });
+                const r = await fetch(dashUrl('run'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ command, is_cron: isCron, job_type: jobType, queue, env, job_exec }) });
                 const data = await r.json();
                 if (data.job_id) showJob({ id: data.job_id, command: command, job_type: jobType, queue_name: queue, env, job_exec });
             } catch (e) { window.showToast('Failed to start command', 'error'); }
@@ -596,7 +614,7 @@ const App = {
 
         const fetchConfig = async () => {
             try {
-                const r = await fetch('/api/config');
+                const r = await fetch(dashUrl('api/config'));
                 if (r.ok) {
                     const d = await r.json();
                     if (d.title) document.title = d.title;
@@ -608,11 +626,11 @@ const App = {
         let configInterval = null;
         onMounted(async () => {
             // Load app config
-            try { const r = await fetch('/static/config/app.json'); if (r.ok) appConfig.value = await r.json(); } catch(e){}
+            try { const r = await fetch(dashUrl('static/config/app.json')); if (r.ok) appConfig.value = await r.json(); } catch(e){}
             await fetchConfig();
             configInterval = setInterval(fetchConfig, 10000);
             try {
-                const r = await fetch(`/static/config/commands.json?t=${Date.now()}`);
+                const r = await fetch(dashUrl(`static/config/commands.json?t=${Date.now()}`));
                 if (r.ok) {
                     const data = await r.json();
                     const qList = (data && typeof data === 'object') ? (data.queues || []) : [];
@@ -711,7 +729,7 @@ const App = {
             const srv = mcpServers.value.find(s => s.name === name);
             if (srv) srv.status = 'starting';
             try {
-                const r = await fetch(`/api/services/${encodeURIComponent(name)}/restart`, { method: 'POST' });
+                const r = await fetch(dashUrl(`api/services/${encodeURIComponent(name)}/restart`), { method: 'POST' });
                 if (r.ok) {
                     window.showToast(`Service '${name}' is restarting...`, 'info');
                     setTimeout(fetchConfig, 1000);
@@ -761,7 +779,7 @@ const CommandsView = {
         
         const loadCommands = async () => {
             try {
-                const r = await fetch(`/static/config/commands.json?t=${Date.now()}`);
+                const r = await fetch(dashUrl(`static/config/commands.json?t=${Date.now()}`));
                 if (r.ok) {
                     const data = await r.json();
                     if (Array.isArray(data)) {
@@ -812,7 +830,7 @@ const ScheduledView = {
 
         const fetchSchedules = async () => {
             try {
-                const r = await fetch('/api/schedules');
+                const r = await fetch(dashUrl('api/schedules'));
                 schedules.value = await r.json();
             } catch (e) {}
         };
@@ -834,7 +852,7 @@ const ScheduledView = {
 
         const saveNew = async () => {
             if(!newSched.label || !newSched.command || !newSched.cron_expr) { window.showToast('All fields required', 'warning'); return; }
-            await fetch('/api/schedules', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newSched) });
+            await fetch(dashUrl('api/schedules'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newSched) });
             showNew.value = false;
             newSched.label = ''; newSched.command = ''; newSched.cron_expr = ''; newSched.queue = '';
             fetchSchedules();
@@ -850,18 +868,18 @@ const ScheduledView = {
 
         const saveEdit = async (id) => {
             if(!editData.label || !editData.command || !editData.cron_expr) return;
-            await fetch(`/api/schedules/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editData) });
+            await fetch(dashUrl(`api/schedules/${id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(editData) });
             editingId.value = null;
             fetchSchedules();
         };
 
         const deleteSchedule = async (id) => {
             if(!confirm('Delete this schedule?')) return;
-            await fetch(`/api/schedules/${id}`, { method: 'DELETE' });
+            await fetch(dashUrl(`api/schedules/${id}`), { method: 'DELETE' });
             fetchSchedules();
         };
-        const toggleEnabled = async (s) => { await fetch(`/api/schedules/${s.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !s.enabled }) }); fetchSchedules(); };
-        const toggleCatchUp = async (s) => { await fetch(`/api/schedules/${s.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ catch_up: !s.catch_up }) }); fetchSchedules(); };
+        const toggleEnabled = async (s) => { await fetch(dashUrl(`api/schedules/${s.id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled: !s.enabled }) }); fetchSchedules(); };
+        const toggleCatchUp = async (s) => { await fetch(dashUrl(`api/schedules/${s.id}`), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ catch_up: !s.catch_up }) }); fetchSchedules(); };
         
         const formatNextRun = (s) => {
             const nd = new Date(s.next_run_iso);
@@ -878,7 +896,7 @@ const ScheduledView = {
 
         const exportSchedules = async () => {
             try {
-                const r = await fetch('/api/schedules/export', { method: 'POST' });
+                const r = await fetch(dashUrl('api/schedules/export'), { method: 'POST' });
                 if (r.ok) {
                     const data = await r.json();
                     window.showToast(`Exported successfully to ${data.path}`, 'success');
@@ -893,7 +911,7 @@ const ScheduledView = {
         const importSchedules = async () => {
             if (!confirm('Are you sure you want to import from schedules.json? This will OVERWRITE all current schedules!')) return;
             try {
-                const r = await fetch('/api/schedules/import', { method: 'POST' });
+                const r = await fetch(dashUrl('api/schedules/import'), { method: 'POST' });
                 if (r.ok) {
                     window.showToast('Imported successfully', 'success');
                     fetchSchedules();
@@ -929,7 +947,7 @@ const HistoryView = {
             if (loadingMore.value) return;
             loadingMore.value = true;
             try {
-                const r = await fetch(`/api/jobs?limit=${limit}&offset=${offset.value}`);
+                const r = await fetch(dashUrl(`api/jobs?limit=${limit}&offset=${offset.value}`));
                 const data = await r.json();
                 if (data.length < limit) {
                     hasMore.value = false;
@@ -998,12 +1016,12 @@ const HistoryView = {
             let msg = 'Delete logs for this job?';
             if(job.status === 'pending') msg = 'Delete this pending job?';
             if(!confirm(msg)) return;
-            await fetch(`/api/job/${job.id}`, { method: 'DELETE' });
+            await fetch(dashUrl(`api/job/${job.id}`), { method: 'DELETE' });
             handleRefresh();
         };
 
         const terminateJob = async (job) => {
-            await fetch(`/api/job/${job.id}/terminate`, { method: 'POST' });
+            await fetch(dashUrl(`api/job/${job.id}/terminate`), { method: 'POST' });
         };
 
 
@@ -1161,7 +1179,7 @@ const LogSearchModal = {
             saveHistoryDebounced(logSearchState.query.trim());
 
             try {
-                const url = `/api/logs/search?q=${encodeURIComponent(logSearchState.query.trim())}&match_case=${logSearchState.matchCase}&match_word=${logSearchState.matchWord}&use_regex=${logSearchState.useRegex}`;
+                const url = dashUrl(`api/logs/search?q=${encodeURIComponent(logSearchState.query.trim())}&match_case=${logSearchState.matchCase}&match_word=${logSearchState.matchWord}&use_regex=${logSearchState.useRegex}`);
                 const response = await fetch(url, {
                     signal: abortController.signal
                 });
@@ -1221,7 +1239,7 @@ const LogSearchModal = {
             logSearchState.selectedMatch = { jobId, lineNumber, fullLog: [] };
             logSearchState.previewLoading = true;
             try {
-                const response = await fetch(`/api/job/${jobId}/log?offset=0&limit=0`);
+                const response = await fetch(dashUrl(`api/job/${jobId}/log?offset=0&limit=0`));
                 if (!response.ok) throw new Error('Failed to load log');
                 const data = await response.json();
                 if (data.content) {

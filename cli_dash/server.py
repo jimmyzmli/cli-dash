@@ -96,6 +96,7 @@ class AppConfig:
     schedules_file: Optional[str] = None  # Path to schedules.json for seeding
     ssl_dir: Optional[str] = None  # Directory containing cert.pem, privkey.pem, etc.
     bind_retries: int = 0  # Number of times to retry socket bind (Errno 49)
+    root_path: str = ""  # ASGI root path for reverse proxy mounts (e.g. /tools)
 
 
 def _get_package_web_ui() -> str:
@@ -414,7 +415,8 @@ def create_app(config: AppConfig, db: Database):
     from fastapi.responses import HTMLResponse, JSONResponse, FileResponse, StreamingResponse, Response
     import asyncio
 
-    app = FastAPI(title=config.title)
+    root_path = config.root_path or os.environ.get("WEB_UI_ROOT_PATH", os.environ.get("FASTAPI_ROOT_PATH", ""))
+    app = FastAPI(title=config.title, root_path=root_path)
 
     @app.on_event("startup")
     async def startup():
