@@ -626,7 +626,18 @@ const App = {
         let configInterval = null;
         onMounted(async () => {
             // Load app config
-            try { const r = await fetch(dashUrl('static/config/app.json')); if (r.ok) appConfig.value = await r.json(); } catch(e){}
+            try {
+                const r = await fetch(dashUrl('static/config/app.json'));
+                if (r.ok) {
+                    appConfig.value = await r.json();
+                    if (appConfig.value && appConfig.value.icon) {
+                        const fav = document.getElementById('favicon');
+                        if (fav) {
+                            fav.href = `data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>${encodeURIComponent(appConfig.value.icon)}</text></svg>`;
+                        }
+                    }
+                }
+            } catch(e){}
             await fetchConfig();
             configInterval = setInterval(fetchConfig, 10000);
             try {
